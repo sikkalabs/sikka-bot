@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime } from './db.js';
+import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canCreateRaffle, recordRaffleCreate } from './db.js';
 import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from 'sikka-sdk';
@@ -145,7 +145,7 @@ async function main() {
       `/sendall <address> — Send all funds\n\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `🎰 *Raffle (use in group)*\n` +
-      `/raffle <entry\_fee> — Start a new raffle\n` +
+      `/raffle <entry\_fee> — Start a raffle (min 100 chillar, 3h cooldown)\n` +
       `/join — Join the active raffle\n` +
       `/prize — Show current raffle info & live countdown\n` +
       `/rafflelist — Show last 5 completed raffles\n` +
@@ -404,28 +404,57 @@ async function main() {
     await handleTip(ctx, recipientId, recipientName, amountStr);
   });
 
-  // RAFFLE LOGIC
+  // /raffle — anyone can start one, but only once every 3 hours.
+  // Admins bypass the cooldown. Minimum entry fee: 100 chillar.
+  const MIN_RAFFLE_FEE = 100n;
+
   bot.command('raffle', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
+    const replyOpts = { reply_parameters: { message_id: ctx.message.message_id } };
     try {
-      const chatAdmins = await ctx.getChatAdministrators();
-      const isAdmin = chatAdmins.some(admin => admin.user.id === ctx.from.id);
-      if (!isAdmin) {
-        return ctx.reply("Only admins can start a raffle.");
-      }
       const args = ctx.message.text.split(/\s+/).slice(1);
-      if (args.length !== 1) return ctx.reply("Usage: /raffle <amount in chillar>");
-      const entryFee = BigInt(args[0]);
-      if (entryFee <= 0n) return ctx.reply("Invalid amount");
-      
-      const active = await getActiveRaffle(db);
-      if (active) return ctx.reply("A raffle is already active!");
-      
-      const endTimeSec = 0; // 0 means waiting for players
-      const raffleId = await createRaffle(db, entryFee.toString(), endTimeSec);
-      await ctx.reply(`🎟 **New Raffle Started!** 🎟\n\nEntry Fee: ${entryFee} chillar\nJoin with /join\nWaiting for at least 2 players to start the timer!`, { parse_mode: 'Markdown' });
+      if (args.length !== 1) {
+        return ctx.reply('Usage: /raffle <entry fee in chillar>\nExample: /raffle 500', replyOpts);
+      }
 
-      // Automatically post live /prize info as soon as the raffle is created
+      let entryFee;
+      try { entryFee = BigInt(args[0]); } catch {
+        return ctx.reply('❌ Entry fee must be a whole number of chillar.', replyOpts);
+      }
+      if (entryFee < MIN_RAFFLE_FEE) {
+        return ctx.reply(`❌ Minimum entry fee is *${MIN_RAFFLE_FEE} chillar*.`, { parse_mode: 'Markdown', ...replyOpts });
+      }
+
+      const active = await getActiveRaffle(db);
+      if (active) return ctx.reply('⚠️ A raffle is already active! Wait for it to finish.', replyOpts);
+
+      // Check if user is admin — admins skip the cooldown
+      const chatAdmins = await ctx.getChatAdministrators();
+      const isAdmin = chatAdmins.some(a => a.user.id === ctx.from.id);
+
+      if (!isAdmin) {
+        const cooldown = await canCreateRaffle(db, ctx.from.id);
+        if (!cooldown.ok) {
+          const h = Math.floor(cooldown.remaining / (60 * 60 * 1000));
+          const m = Math.floor((cooldown.remaining % (60 * 60 * 1000)) / (60 * 1000));
+          return replyThenDelete(
+            ctx,
+            `⏳ You can only start a raffle once every 3 hours. Try again in *${h}h ${m}m*.`,
+            { parse_mode: 'Markdown', ...replyOpts }
+          );
+        }
+      }
+
+      const raffleId = await createRaffle(db, entryFee.toString(), 0);
+      await recordRaffleCreate(db, ctx.from.id);
+
+      const creatorTag = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+      await ctx.reply(
+        `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${entryFee} chillar*\n\nJoin with /join — waiting for at least 2 players to start the timer!`,
+        { parse_mode: 'Markdown' }
+      );
+
+      // Auto-post live prize info immediately
       const prizeText =
         `🏆 **Current Raffle Info** 🏆\n\n` +
         `👥 Participants: 0\n` +
@@ -437,7 +466,7 @@ async function main() {
       lastPrizeMsgId = prizeMsg.message_id;
     } catch (err) {
       console.error(err);
-      ctx.reply(`Error: ${err.message}`);
+      ctx.reply(`Error: ${err.message}`, replyOpts);
     }
   });
 

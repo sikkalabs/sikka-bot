@@ -30,6 +30,12 @@ export async function initDB(dbPath) {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_raffle_entries_unique ON raffle_entries(raffle_id, telegram_user_id);
 
+    CREATE TABLE IF NOT EXISTS raffle_creations (
+      telegram_user_id TEXT NOT NULL,
+      created_at       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_raffle_creations_user ON raffle_creations(telegram_user_id);
+
     CREATE TABLE IF NOT EXISTS migrated_users (
       telegram_user_id TEXT PRIMARY KEY,
       migrated_at      INTEGER NOT NULL
@@ -60,6 +66,30 @@ export async function recordClaim(db, userId) {
   const now = Math.floor(Date.now() / 1000);
   await db.run(
     `INSERT INTO claims (telegram_user_id, claimed_at) VALUES (?, ?)`,
+    [String(userId), now]
+  );
+}
+
+// RAFFLE CREATION COOLDOWN
+const RAFFLE_CREATE_COOLDOWN = 3 * 60 * 60 * 1000; // 3 hours, always fixed
+
+export async function canCreateRaffle(db, userId) {
+  const cutoff = Math.floor((Date.now() - RAFFLE_CREATE_COOLDOWN) / 1000);
+  const row = await db.get(
+    `SELECT created_at FROM raffle_creations WHERE telegram_user_id = ? AND created_at > ? ORDER BY created_at DESC LIMIT 1`,
+    [String(userId), cutoff]
+  );
+  if (!row) return { ok: true, remaining: 0 };
+  const lastCreated = row.created_at * 1000;
+  const remaining = (lastCreated + RAFFLE_CREATE_COOLDOWN) - Date.now();
+  if (remaining <= 0) return { ok: true, remaining: 0 };
+  return { ok: false, remaining };
+}
+
+export async function recordRaffleCreate(db, userId) {
+  const now = Math.floor(Date.now() / 1000);
+  await db.run(
+    `INSERT INTO raffle_creations (telegram_user_id, created_at) VALUES (?, ?)`,
     [String(userId), now]
   );
 }
