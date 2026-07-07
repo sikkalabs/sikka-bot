@@ -296,8 +296,13 @@ async function main() {
         await setRaffleTime(db, active.id, newEndTime);
         await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown', ...replyOpts });
       } else {
-        // Fix #5: only extend if the timer hasn't already expired
-        if (active.end_time > 0 && nowAfter < active.end_time) {
+        if (Number(active.end_time) === 0) {
+          // Timer was never started (e.g. entries added outside normal /join flow) — start it now
+          const newEndTime = nowAfter + 120;
+          await setRaffleTime(db, active.id, newEndTime);
+          await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown', ...replyOpts });
+        } else if (active.end_time > 0 && nowAfter < active.end_time) {
+          // Fix #5: only extend if the timer hasn't already expired
           await extendRaffleTime(db, active.id, 120);
           await ctx.reply(`✅ You joined the raffle! Timer extended by 2 mins.\nTx: ` + txID, replyOpts);
         } else {
