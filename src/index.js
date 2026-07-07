@@ -310,15 +310,14 @@ async function main() {
     try {
       const active = await getActiveRaffle(db);
       if (!active) return ctx.reply("No active raffle.");
-      
+
       const entries = await getRaffleEntries(db, active.id);
       const entryFee = BigInt(active.entry_fee);
       const totalPool = entryFee * BigInt(entries.length);
       const fee = totalPool * 5n / 100n;
       const prize = totalPool - fee;
-      
+
       const now = Math.floor(Date.now() / 1000);
-      
       let timeText = "";
       // Fix #8: use Number() coercion — SQLite may return end_time as string "0"
       if (Number(active.end_time) === 0) {
@@ -329,8 +328,18 @@ async function main() {
         const s = timeLeft % 60;
         timeText = `${m}m ${s}s`;
       }
-      
-      await ctx.reply(`🏆 **Current Raffle Info** 🏆\n\nParticipants: ${entries.length}\nTotal Pool: ${totalPool} chillar\nPrize (Minus 5%): ${prize} chillar\n\nTime Left: ${timeText}`, { parse_mode: 'Markdown' });
+
+      const text =
+        `🏆 **Current Raffle Info** 🏆\n\n` +
+        `👥 Participants: ${entries.length}\n` +
+        `💰 Total Pool: ${totalPool} chillar\n` +
+        `🎁 Prize (Minus 5%): ${prize} chillar\n\n` +
+        `⏳ Time Left: **${timeText}**\n\n` +
+        `👉 /join@sikkalabsbot to enter!`;
+
+      // Store the message ID so the 30s interval can edit it live
+      const sent = await ctx.reply(text, { parse_mode: 'Markdown' });
+      lastPrizeMsgId = sent.message_id;
     } catch (err) {
       console.error(err);
       ctx.reply(`Error: ${err.message}`);
@@ -486,31 +495,28 @@ async function main() {
     }
   }, 5000);
 
-  // Live raffle status — edits a single group message every 30s with the countdown.
-  // Editing instead of posting keeps the chat clean while still driving engagement.
-  let raffleStatusMsgId = null;
+  // Live raffle status — edits the last /prize message every 30s.
+  // If nobody has typed /prize yet, the interval stays silent.
+  let lastPrizeMsgId = null;
 
   setInterval(async () => {
     try {
       const active = await getActiveRaffle(db);
 
-      // No active raffle — clean up the status message if one exists
       if (!active) {
-        if (raffleStatusMsgId) {
-          await bot.telegram.deleteMessage(telegramGroup, raffleStatusMsgId).catch(() => {});
-          raffleStatusMsgId = null;
-        }
+        lastPrizeMsgId = null; // raffle ended — stop editing
         return;
       }
 
+      if (!lastPrizeMsgId) return; // nobody has typed /prize yet
+
       const now = Math.floor(Date.now() / 1000);
 
-      // Timer not started yet (< 2 players) — show a waiting message
       let timeText;
       if (Number(active.end_time) === 0) {
         timeText = 'Waiting for more players...';
       } else if (now >= active.end_time) {
-        return; // about to be resolved by the other interval, don't interfere
+        return; // resolver will handle this tick
       } else {
         const timeLeft = active.end_time - now;
         const m = Math.floor(timeLeft / 60);
@@ -525,28 +531,20 @@ async function main() {
       const prize = totalPool - fee;
 
       const statusText =
-        `🏆 **Current Raffle** 🏆\n\n` +
+        `🏆 **Current Raffle Info** 🏆\n\n` +
         `👥 Participants: ${entries.length}\n` +
         `💰 Total Pool: ${totalPool} chillar\n` +
         `🎁 Prize (Minus 5%): ${prize} chillar\n\n` +
         `⏳ Time Left: **${timeText}**\n\n` +
         `👉 /join@sikkalabsbot to enter!`;
 
-      if (raffleStatusMsgId) {
-        // Try to edit the existing message
-        await bot.telegram.editMessageText(
-          telegramGroup, raffleStatusMsgId, undefined,
-          statusText, { parse_mode: 'Markdown' }
-        ).catch(async () => {
-          // Message was deleted or too old — post a fresh one
-          raffleStatusMsgId = null;
-        });
-      }
-
-      if (!raffleStatusMsgId) {
-        const msg = await bot.telegram.sendMessage(telegramGroup, statusText, { parse_mode: 'Markdown' });
-        raffleStatusMsgId = msg.message_id;
-      }
+      await bot.telegram.editMessageText(
+        telegramGroup, lastPrizeMsgId, undefined,
+        statusText, { parse_mode: 'Markdown' }
+      ).catch(() => {
+        // Message was deleted — stop trying to edit it
+        lastPrizeMsgId = null;
+      });
     } catch (e) {
       console.error('Raffle status update error:', e);
     }
