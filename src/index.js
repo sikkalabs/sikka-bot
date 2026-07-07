@@ -294,14 +294,14 @@ async function main() {
       mentionEntity.offset, mentionEntity.offset + mentionEntity.length
     ); // e.g. "@john"
 
-    // Resolve user ID via Telegram API
+    // Resolve user ID from cache (populated from group messages)
     let recipientId, recipientName;
-    try {
-      const chat = await ctx.telegram.getChat(username);
-      recipientId = chat.id;
-      recipientName = chat.first_name || chat.username;
-    } catch {
-      return ctx.reply(`❌ Couldn't find user ${username}. Make sure they've interacted with Telegram.`, replyOpts);
+    const cached = usernameCache.get(username.replace('@', '').toLowerCase());
+    if (cached) {
+      recipientId = cached.id;
+      recipientName = cached.firstName;
+    } else {
+      return ctx.reply(`❌ Couldn't resolve ${username}. They need to send a message in the group first so the bot can see them.`, replyOpts);
     }
 
     // Amount is the last token
@@ -623,6 +623,7 @@ async function main() {
   // Live raffle status — edits the last /prize message every 30s.
   // If nobody has typed /prize yet, the interval stays silent.
   let lastPrizeMsgId = null;
+  const usernameCache = new Map(); // username (lowercase, no @) → { id, firstName }
 
   setInterval(async () => {
     try {
@@ -686,6 +687,11 @@ async function main() {
       return;
     }
 
+    // Cache sender's username → userId so tips can resolve @mentions reliably
+    if (ctx.from?.username) {
+      usernameCache.set(ctx.from.username.toLowerCase(), { id: ctx.from.id, firstName: ctx.from.first_name || ctx.from.username });
+    }
+
     const text = ctx.message.text;
 
     // Handle plain-text tip: "tip @username 100"
@@ -695,13 +701,15 @@ async function main() {
       if (mentionEntity) {
         const username = text.slice(mentionEntity.offset, mentionEntity.offset + mentionEntity.length);
         let recipientId, recipientName;
-        try {
-          const chat = await ctx.telegram.getChat(username);
-          recipientId = chat.id;
-          recipientName = chat.first_name || chat.username;
-        } catch {
-          await ctx.reply(`❌ Couldn't find user ${username}.`,
-            { reply_parameters: { message_id: ctx.message.message_id } });
+        const cached = usernameCache.get(username.replace('@', '').toLowerCase());
+        if (cached) {
+          recipientId = cached.id;
+          recipientName = cached.firstName;
+        } else {
+          await ctx.reply(
+            `❌ Couldn't resolve ${username}. They need to send a message in the group first so the bot can see them.`,
+            { reply_parameters: { message_id: ctx.message.message_id } }
+          );
           return;
         }
         const args = text.trim().split(/\s+/);
