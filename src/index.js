@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, getRecentRaffles, getRaffleById, setRaffleTime } from './db.js';
+import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, getRecentRaffles, getRaffleById, setRaffleTime } from './db.js';
 import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from 'sikka-sdk';
@@ -170,7 +170,7 @@ async function main() {
     try {
       const chatAdmins = await ctx.getChatAdministrators();
       const isAdmin = chatAdmins.some(admin => admin.user.id === ctx.from.id);
-      if (!isAdmin && ctx.from.id.toString() !== '123456789') { // basic admin check
+      if (!isAdmin) {
         return ctx.reply("Only admins can start a raffle.");
       }
       const args = ctx.message.text.split(/\s+/).slice(1);
@@ -192,43 +192,76 @@ async function main() {
 
   bot.command('join', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
+
+    const userId = ctx.from.id;
+
+    // Fix #1: per-user lock — prevents two concurrent /join messages from the
+    // same user both passing hasUserJoinedRaffle before either writes to the DB.
+    if (joiningUsers.has(userId)) {
+      return ctx.reply("Please wait, your previous join is still processing.");
+    }
+    joiningUsers.add(userId);
+
     try {
       const active = await getActiveRaffle(db);
       if (!active) return ctx.reply("No active raffle to join.");
-      
-      const hasJoined = await hasUserJoinedRaffle(db, active.id, ctx.from.id);
+
+      const hasJoined = await hasUserJoinedRaffle(db, active.id, userId);
       if (hasJoined) return ctx.reply("You have already joined this raffle!");
-      
+
+      // Fix #5: reject if the raffle timer has already expired
+      const now = Math.floor(Date.now() / 1000);
+      if (active.end_time > 0 && now >= active.end_time) {
+        return ctx.reply("The raffle has just ended — you can no longer join.");
+      }
+
       const entryFee = BigInt(active.entry_fee);
-      const uWallet = await getUserWallet(ctx.from.id);
-      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
+      const uWallet = await getUserWallet(userId);
+      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, userId, uWallet);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
-      
+
       if (BigInt(bal) < entryFee) {
         return ctx.reply(`You don't have enough balance. You need ${entryFee} chillar, but have ${bal} chillar.\nDeposit to: \`${uWallet.address}\``, { parse_mode: 'Markdown' });
       }
-      
-      const { txID } = await client.send(entryFee, wallet.address); // send to faucet wallet
-      
-      await addRaffleEntry(db, active.id, ctx.from.id);
-      
+
+      // Fix #3: record entry in DB FIRST, then send funds.
+      // If the send fails, roll back the entry so the user can retry cleanly.
+      await addRaffleEntry(db, active.id, userId);
+
+      let txID;
+      try {
+        const result = await client.send(entryFee, wallet.address);
+        txID = result.txID;
+      } catch (sendErr) {
+        await removeRaffleEntry(db, active.id, userId);
+        return ctx.reply(`Failed to send entry fee: ${sendErr.message}. Please try again.`);
+      }
+
       const entries = await getRaffleEntries(db, active.id);
       const newCount = entries.length;
-      
+      const nowAfter = Math.floor(Date.now() / 1000);
+
       if (newCount === 1) {
-         await ctx.reply(`✅ You joined the raffle! Waiting for at least 1 more player to start the timer.\nTx: ` + txID);
+        await ctx.reply(`✅ You joined the raffle! Waiting for at least 1 more player to start the timer.\nTx: ` + txID);
       } else if (newCount === 2) {
-         const newEndTime = Math.floor(Date.now() / 1000) + 120;
-         await setRaffleTime(db, active.id, newEndTime);
-         await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown' });
+        const newEndTime = nowAfter + 120;
+        await setRaffleTime(db, active.id, newEndTime);
+        await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown' });
       } else {
-         await extendRaffleTime(db, active.id, 120);
-         await ctx.reply(`✅ You joined the raffle! Timer extended by 2 mins.\nTx: ` + txID);
+        // Fix #5: only extend if the timer hasn't already expired
+        if (active.end_time > 0 && nowAfter < active.end_time) {
+          await extendRaffleTime(db, active.id, 120);
+          await ctx.reply(`✅ You joined the raffle! Timer extended by 2 mins.\nTx: ` + txID);
+        } else {
+          await ctx.reply(`✅ You joined the raffle!\nTx: ` + txID);
+        }
       }
     } catch (err) {
       console.error(err);
       ctx.reply(`Error joining: ${err.message}`);
+    } finally {
+      joiningUsers.delete(userId); // always release the lock
     }
   });
 
@@ -304,53 +337,62 @@ async function main() {
     }
   });
 
-  // Background loop to resolve raffles
+  // Background loop to resolve raffles.
+  // Fix #2: isResolvingRaffle is set synchronously (before first await) so any
+  // subsequent interval tick that fires while an async resolution is in-flight
+  // sees the flag immediately and exits — preventing double prize payout.
+  let isResolvingRaffle = false;
   setInterval(async () => {
+    if (isResolvingRaffle) return;
+    isResolvingRaffle = true;
     try {
       const active = await getActiveRaffle(db);
       if (!active) return;
-      
+
       const now = Math.floor(Date.now() / 1000);
       if (active.end_time > 0 && now >= active.end_time) {
-        // Resolve it
         const entries = await getRaffleEntries(db, active.id);
         if (entries.length === 0) {
-           await closeRaffle(db, active.id, "none", "0");
-           bot.telegram.sendMessage(telegramGroup, "The raffle has ended with no participants! 😢").catch(console.error);
-           return;
+          await closeRaffle(db, active.id, "none", "0");
+          bot.telegram.sendMessage(telegramGroup, "The raffle has ended with no participants! 😢").catch(console.error);
+          return;
         }
-        
+
         const winnerIdx = Math.floor(Math.random() * entries.length);
         const winnerId = entries[winnerIdx];
-        
+
         const entryFee = BigInt(active.entry_fee);
         const totalPool = entryFee * BigInt(entries.length);
         const fee = totalPool * 5n / 100n;
         const prize = totalPool - fee;
-        
+
+        // Close BEFORE announcing so a second tick never sees this raffle as active
         await closeRaffle(db, active.id, winnerId, prize.toString());
-        
-        // Announce winner
-        let announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [User](tg://user?id=${winnerId})\nPrize: ${prize} chillar!\n\nSending funds...`;
+
+        const announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [User](tg://user?id=${winnerId})\nPrize: ${prize} chillar!\n\nSending funds...`;
         const sentMsg = await bot.telegram.sendMessage(telegramGroup, announceMsg, { parse_mode: 'Markdown' }).catch(console.error);
-        
-        // Attempt to send funds
+
         try {
-           const winnerWallet = await getUserWallet(winnerId);
-           const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
-           const { txID } = await fclient.send(prize, winnerWallet.address);
-           bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\nThey can type /balance to check.`, { parse_mode: 'Markdown', reply_parameters: { message_id: sentMsg.message_id } }).catch(console.error);
+          const winnerWallet = await getUserWallet(winnerId);
+          const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
+          const { txID } = await fclient.send(prize, winnerWallet.address);
+          // Fix #7: guard against sentMsg being undefined if the announce message failed
+          const replyParams = sentMsg ? { reply_parameters: { message_id: sentMsg.message_id } } : {};
+          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\nThey can type /balance to check.`, { parse_mode: 'Markdown', ...replyParams }).catch(console.error);
         } catch (e) {
-           console.error("Failed to send prize:", e);
-           bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).catch(console.error);
+          console.error("Failed to send prize:", e);
+          bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).catch(console.error);
         }
       }
     } catch (e) {
       console.error("Raffle resolution error:", e);
+    } finally {
+      isResolvingRaffle = false;
     }
   }, 5000);
 
   const processingUsers = new Set();
+  const joiningUsers = new Set(); // per-user lock for /join (Fix #1)
   
   bot.on(message('text'), async (ctx) => {
     console.log(`Received message from chat ${ctx.chat.id}: ${ctx.message.text}`);

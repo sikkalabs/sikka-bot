@@ -28,6 +28,7 @@ export async function initDB(dbPath) {
       raffle_id INTEGER NOT NULL,
       telegram_user_id TEXT NOT NULL
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_raffle_entries_unique ON raffle_entries(raffle_id, telegram_user_id);
 
     CREATE TABLE IF NOT EXISTS migrated_users (
       telegram_user_id TEXT PRIMARY KEY,
@@ -79,6 +80,13 @@ export async function getActiveRaffle(db) {
 export async function addRaffleEntry(db, raffleId, userId) {
   await db.run(
     `INSERT INTO raffle_entries (raffle_id, telegram_user_id) VALUES (?, ?)`,
+    [raffleId, String(userId)]
+  );
+}
+
+export async function removeRaffleEntry(db, raffleId, userId) {
+  await db.run(
+    `DELETE FROM raffle_entries WHERE raffle_id = ? AND telegram_user_id = ?`,
     [raffleId, String(userId)]
   );
 }
