@@ -590,7 +590,7 @@ async function main() {
 
       if (newCount === 1) {
         // Still waiting for a second player — no timer yet
-        await ctx.reply(`✅ You joined the raffle!\nWaiting for 1 more player to start the timer.\nTx: ${txID}`, replyOpts);
+        await replyThenDelete(ctx, `✅ You joined the raffle!\nWaiting for 1 more player to start the timer.\nTx: ${txID}`, replyOpts, 100);
       } else {
         // 2nd player or beyond — always reset clock to exactly 2 mins from now
         const newEndTime = nowAfter + 120;
@@ -600,7 +600,7 @@ async function main() {
           ? `✅ You joined the raffle!\n\n⏳ Timer started — 2 minutes remaining!\nTx: ${txID}`
           : `✅ You joined the raffle!\n\n⏳ Timer reset — 2 minutes remaining!\nTx: ${txID}`;
 
-        await ctx.reply(msg, { parse_mode: 'Markdown', ...replyOpts });
+        await replyThenDelete(ctx, msg, { parse_mode: 'Markdown', ...replyOpts }, 100);
       }
     } catch (err) {
       console.error(err);
