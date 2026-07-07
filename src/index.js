@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canCreateRaffle, recordRaffleCreate } from './db.js';
+import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canStartRaffle } from './db.js';
 import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from 'sikka-sdk';
@@ -158,7 +158,7 @@ async function main() {
       `<b>┌─ 🎰 Raffle ──────────────────┐</b>\n` +
       `  <code>/raffle</code> — Live pot &amp; countdown\n` +
       `  <code>/raffle &lt;fee&gt;</code> — Start a raffle\n` +
-      `  <i>  min 1 SIKKA · once every 3 h · admins exempt</i>\n` +
+      `  <i>  min 1 SIKKA · 10 min cooldown between raffles · admins exempt</i>\n` +
       `  <code>/join</code> — Enter the active raffle\n` +
       `  <code>/rafflelist</code> — Last 5 results\n` +
       `  <code>/cancel</code> — Cancel raffle <i>(admin only)</i>\n\n` +
@@ -486,20 +486,19 @@ async function main() {
       const isAdmin = chatAdmins.some(a => a.user.id === ctx.from.id);
 
       if (!isAdmin) {
-        const cooldown = await canCreateRaffle(db, ctx.from.id);
+        const cooldown = await canStartRaffle(db);
         if (!cooldown.ok) {
-          const h = Math.floor(cooldown.remaining / (60 * 60 * 1000));
-          const m = Math.floor((cooldown.remaining % (60 * 60 * 1000)) / (60 * 1000));
+          const m = Math.floor(cooldown.remaining / (60 * 1000));
+          const s = Math.floor((cooldown.remaining % (60 * 1000)) / 1000);
           return replyThenDelete(
             ctx,
-            `⏳ You can only start a raffle once every 3 hours. Try again in *${h}h ${m}m*.`,
+            `⏳ A raffle just ended. Please wait *${m}m ${s}s* before starting a new one.`,
             { parse_mode: 'Markdown', ...replyOpts }
           );
         }
       }
 
       const raffleId = await createRaffle(db, entryFee.toString(), 0);
-      await recordRaffleCreate(db, ctx.from.id);
 
       const creatorTag = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
       await ctx.reply(

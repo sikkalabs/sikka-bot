@@ -22,7 +22,8 @@ export async function initDB(dbPath) {
       end_time     INTEGER NOT NULL,
       status       TEXT    NOT NULL DEFAULT 'active',
       winner_id    TEXT,
-      prize_amount TEXT
+      prize_amount TEXT,
+      closed_at    INTEGER
     );
     -- getActiveRaffle runs every 5 s — index keeps it O(log n)
     CREATE INDEX IF NOT EXISTS idx_raffles_status ON raffles(status);
@@ -45,6 +46,11 @@ export async function initDB(dbPath) {
       migrated_at      INTEGER NOT NULL
     );
   `);
+
+  // Migrate existing DBs that predate the closed_at column — safe no-op on fresh DBs
+  try {
+    await db.exec(`ALTER TABLE raffles ADD COLUMN closed_at INTEGER;`);
+  } catch (_) { /* column already exists — ignore */ }
 
   return db;
 }
@@ -71,26 +77,20 @@ export async function recordClaim(db, userId) {
   );
 }
 
-// ─── Raffle-creation cooldown ─────────────────────────────────────────────────
+// ─── Raffle-start global cooldown (10 min after last raffle ended) ─────────────
 
-const RAFFLE_CREATE_COOLDOWN_MS = 3 * 60 * 60 * 1000;
+const RAFFLE_GLOBAL_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
-export async function canCreateRaffle(db, userId) {
+export async function canStartRaffle(db) {
   const row = await db.get(
-    `SELECT created_at FROM raffle_creations WHERE telegram_user_id = ?`,
-    [String(userId)]
+    `SELECT closed_at FROM raffles
+     WHERE status IN ('closed', 'cancelled') AND closed_at IS NOT NULL
+     ORDER BY closed_at DESC LIMIT 1`
   );
   if (!row) return { ok: true, remaining: 0 };
-  const remaining = (row.created_at * 1000 + RAFFLE_CREATE_COOLDOWN_MS) - Date.now();
+  const remaining = (row.closed_at * 1000 + RAFFLE_GLOBAL_COOLDOWN_MS) - Date.now();
   if (remaining <= 0) return { ok: true, remaining: 0 };
   return { ok: false, remaining };
-}
-
-export async function recordRaffleCreate(db, userId) {
-  await db.run(
-    `INSERT OR REPLACE INTO raffle_creations (telegram_user_id, created_at) VALUES (?, ?)`,
-    [String(userId), Math.floor(Date.now() / 1000)]
-  );
 }
 
 // ─── Raffle CRUD ──────────────────────────────────────────────────────────────
@@ -139,15 +139,15 @@ export async function hasUserJoinedRaffle(db, raffleId, userId) {
 
 export async function closeRaffle(db, raffleId, winnerId, prizeAmountStr) {
   await db.run(
-    `UPDATE raffles SET status = 'closed', winner_id = ?, prize_amount = ? WHERE id = ?`,
-    [winnerId, prizeAmountStr, raffleId]
+    `UPDATE raffles SET status = 'closed', winner_id = ?, prize_amount = ?, closed_at = ? WHERE id = ?`,
+    [winnerId, prizeAmountStr, Math.floor(Date.now() / 1000), raffleId]
   );
 }
 
 export async function cancelRaffle(db, raffleId) {
   await db.run(
-    `UPDATE raffles SET status = 'cancelled', winner_id = NULL, prize_amount = NULL WHERE id = ?`,
-    [raffleId]
+    `UPDATE raffles SET status = 'cancelled', winner_id = NULL, prize_amount = NULL, closed_at = ? WHERE id = ?`,
+    [Math.floor(Date.now() / 1000), raffleId]
   );
 }
 
