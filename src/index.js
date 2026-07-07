@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, getRecentRaffles, getRaffleById, setRaffleTime } from './db.js';
+import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime } from './db.js';
 import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from 'sikka-sdk';
@@ -280,13 +280,14 @@ async function main() {
       const now = Math.floor(Date.now() / 1000);
       
       let timeText = "";
-      if (active.end_time === 0) {
-         timeText = "Waiting for 2 players to start...";
+      // Fix #8: use Number() coercion — SQLite may return end_time as string "0"
+      if (Number(active.end_time) === 0) {
+        timeText = "Waiting for 2 players to start...";
       } else {
-         const timeLeft = Math.max(0, active.end_time - now);
-         const m = Math.floor(timeLeft / 60);
-         const s = timeLeft % 60;
-         timeText = `${m}m ${s}s`;
+        const timeLeft = Math.max(0, active.end_time - now);
+        const m = Math.floor(timeLeft / 60);
+        const s = timeLeft % 60;
+        timeText = `${m}m ${s}s`;
       }
       
       await ctx.reply(`🏆 **Current Raffle Info** 🏆\n\nParticipants: ${entries.length}\nTotal Pool: ${totalPool} chillar\nPrize (Minus 5%): ${prize} chillar\n\nTime Left: ${timeText}`, { parse_mode: 'Markdown' });
@@ -307,6 +308,48 @@ async function main() {
         msg += `/raffle_${r.id} - Prize: ${r.prize_amount} chillar\n`;
       }
       await ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error(err);
+      ctx.reply(`Error: ${err.message}`);
+    }
+  });
+
+  // Fix #10: /cancel — admin-only, refunds all participants and closes the raffle
+  bot.command('cancel', async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    try {
+      const chatAdmins = await ctx.getChatAdministrators();
+      const isAdmin = chatAdmins.some(admin => admin.user.id === ctx.from.id);
+      if (!isAdmin) return ctx.reply("Only admins can cancel a raffle.");
+
+      const active = await getActiveRaffle(db);
+      if (!active) return ctx.reply("No active raffle to cancel.");
+
+      const entries = await getRaffleEntries(db, active.id);
+      const entryFee = BigInt(active.entry_fee);
+
+      await cancelRaffle(db, active.id);
+      await ctx.reply(`🚫 Raffle cancelled. Refunding ${entries.length} participant(s)...`);
+
+      // Refund each participant from the faucet wallet
+      let refunded = 0;
+      let failed = 0;
+      for (const participantId of entries) {
+        try {
+          const pWallet = await getUserWallet(participantId);
+          const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
+          await fclient.send(entryFee, pWallet.address);
+          refunded++;
+        } catch (e) {
+          console.error(`Refund failed for userId=${participantId}:`, e.message);
+          failed++;
+        }
+      }
+
+      await ctx.reply(
+        `✅ Refund complete.\n\nRefunded: ${refunded}\nFailed: ${failed}` +
+        (failed > 0 ? `\n\n⚠️ ${failed} refund(s) failed — funds remain in faucet wallet.` : ``)
+      );
     } catch (err) {
       console.error(err);
       ctx.reply(`Error: ${err.message}`);

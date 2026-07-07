@@ -121,6 +121,13 @@ export async function closeRaffle(db, raffleId, winnerId, prizeAmountStr) {
   );
 }
 
+export async function cancelRaffle(db, raffleId) {
+  await db.run(
+    `UPDATE raffles SET status = 'cancelled', winner_id = NULL, prize_amount = NULL WHERE id = ?`,
+    [raffleId]
+  );
+}
+
 export async function getRecentRaffles(db, limit = 5) {
   return await db.all(
     `SELECT * FROM raffles WHERE status = 'closed' ORDER BY id DESC LIMIT ?`,
