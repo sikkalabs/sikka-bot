@@ -131,7 +131,8 @@ async function main() {
       `/join — Join the active raffle\n` +
       `/prize — Show current raffle info & live countdown\n` +
       `/rafflelist — Show last 5 completed raffles\n` +
-      `/cancel — Cancel the active raffle (admin only)\n\n` +
+      `/cancel — Cancel the active raffle (admin only)\n` +
+      `/tip @username 100 — Tip someone chillar directly\n\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `ℹ️ /sikka — Show this help message`,
       { parse_mode: 'Markdown' }
@@ -221,6 +222,98 @@ async function main() {
     await handleWithdraw(ctx, 'all', args[0]);
   });
 
+
+  // TIP LOGIC
+  async function handleTip(ctx, recipientId, recipientName, amountStr) {
+    const senderId = ctx.from.id;
+    const replyOpts = { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' };
+
+    if (senderId === recipientId) {
+      return ctx.reply(`❌ You can't tip yourself!`, replyOpts);
+    }
+
+    const amount = parseInt(amountStr, 10);
+    if (isNaN(amount) || amount <= 0) {
+      return ctx.reply(`❌ Invalid amount. Usage: /tip @username 100`, replyOpts);
+    }
+    const amountChillar = BigInt(amount);
+
+    try {
+      const senderWallet = await getUserWallet(senderId);
+      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, senderId, senderWallet);
+
+      const senderClient = new SikkaClient({ nodeURL: selectedNodeURL, wallet: senderWallet });
+      const bal = await senderClient.balance();
+
+      if (BigInt(bal) < amountChillar) {
+        ctx.telegram.sendMessage(
+          senderId,
+          `💳 *You tried to tip ${amount} chillar but only have ${bal}.*\n\nYour deposit address:\n\`${senderWallet.address}\``,
+          { parse_mode: 'Markdown' }
+        ).catch(() => {});
+        return ctx.reply(
+          `❌ Insufficient balance. You have *${bal} chillar* but tried to tip *${amount} chillar*.\n📩 Check your DMs for your deposit address!`,
+          replyOpts
+        );
+      }
+
+      const recipientWallet = await getUserWallet(recipientId);
+      const { txID } = await senderClient.send(amountChillar, recipientWallet.address);
+
+      // Public confirmation in group
+      await ctx.reply(
+        `💸 *${ctx.from.first_name}* tipped *${recipientName}* **${amount} chillar**!\n\nTx: \`${txID}\``,
+        replyOpts
+      );
+
+      // Private notification to recipient
+      ctx.telegram.sendMessage(
+        recipientId,
+        `🎉 You received a tip of *${amount} chillar* from *${ctx.from.first_name}*!\n\nIt's now in your wallet:\n\`${recipientWallet.address}\``,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {}); // Silently ignore if recipient hasn't started bot in DM
+    } catch (err) {
+      console.error('Tip error:', err);
+      await ctx.reply(humanizeSendError(err), replyOpts);
+    }
+  }
+
+  bot.command('tip', async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+
+    // Extract mention entity with a user id
+    const entities = ctx.message.entities || [];
+    const mentionEntity = entities.find(e => e.type === 'mention' || e.type === 'text_mention');
+
+    let recipientId, recipientName;
+    if (mentionEntity?.type === 'text_mention') {
+      recipientId = mentionEntity.user.id;
+      recipientName = mentionEntity.user.first_name;
+    } else if (mentionEntity?.type === 'mention') {
+      // @username mention — user object not always available, need to parse args
+      const usernameInText = ctx.message.text.slice(
+        mentionEntity.offset, mentionEntity.offset + mentionEntity.length
+      );
+      // Try to get user from the mention entity's user field if available
+      if (mentionEntity.user) {
+        recipientId = mentionEntity.user.id;
+        recipientName = mentionEntity.user.first_name;
+      } else {
+        return ctx.reply(
+          `❌ Couldn't resolve that user. Ask them to send a message in the group first, then try again.`,
+          { reply_parameters: { message_id: ctx.message.message_id } }
+        );
+      }
+    } else {
+      return ctx.reply(`❌ Usage: /tip @username 100`, { reply_parameters: { message_id: ctx.message.message_id } });
+    }
+
+    // Amount is the last token
+    const args = ctx.message.text.trim().split(/\s+/);
+    const amountStr = args[args.length - 1];
+
+    await handleTip(ctx, recipientId, recipientName, amountStr);
+  });
 
   // RAFFLE LOGIC
   bot.command('raffle', async (ctx) => {
@@ -596,8 +689,34 @@ async function main() {
       console.log(`Ignored message from chat ${ctx.chat.id} (expected ${telegramGroup})`);
       return;
     }
-    
+
     const text = ctx.message.text;
+
+    // Handle plain-text tip: "tip @username 100"
+    if (/^tip\s+/i.test(text)) {
+      const entities = ctx.message.entities || [];
+      const mentionEntity = entities.find(e => e.type === 'mention' || e.type === 'text_mention');
+
+      if (mentionEntity) {
+        let recipientId, recipientName;
+        if (mentionEntity.type === 'text_mention') {
+          recipientId = mentionEntity.user.id;
+          recipientName = mentionEntity.user.first_name;
+        } else if (mentionEntity.type === 'mention' && mentionEntity.user) {
+          recipientId = mentionEntity.user.id;
+          recipientName = mentionEntity.user.first_name;
+        } else {
+          await ctx.reply(`❌ Couldn't resolve that user. Ask them to send a message in the group first.`,
+            { reply_parameters: { message_id: ctx.message.message_id } });
+          return;
+        }
+        const args = text.trim().split(/\s+/);
+        const amountStr = args[args.length - 1];
+        await handleTip(ctx, recipientId, recipientName, amountStr);
+        return; // Don't fall through to airdrop logic
+      }
+    }
+
     const matches = text.match(addressRe);
     if (!matches || matches.length === 0) return;
     
