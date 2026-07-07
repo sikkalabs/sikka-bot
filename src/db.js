@@ -6,95 +6,95 @@ export async function initDB(dbPath) {
     filename: dbPath,
     driver: sqlite3.Database
   });
-  
+
   await db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`);
+
   await db.exec(`
+    -- One row per user; upsert on write — never grows unboundedly
     CREATE TABLE IF NOT EXISTS claims (
-      telegram_user_id TEXT NOT NULL,
-      claimed_at      INTEGER NOT NULL
+      telegram_user_id TEXT    PRIMARY KEY,
+      claimed_at       INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_claims_user ON claims(telegram_user_id);
 
     CREATE TABLE IF NOT EXISTS raffles (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      entry_fee TEXT NOT NULL,
-      end_time INTEGER NOT NULL,
-      status TEXT NOT NULL,
-      winner_id TEXT,
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_fee    TEXT    NOT NULL,
+      end_time     INTEGER NOT NULL,
+      status       TEXT    NOT NULL DEFAULT 'active',
+      winner_id    TEXT,
       prize_amount TEXT
     );
-    CREATE TABLE IF NOT EXISTS raffle_entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      raffle_id INTEGER NOT NULL,
-      telegram_user_id TEXT NOT NULL
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_raffle_entries_unique ON raffle_entries(raffle_id, telegram_user_id);
+    -- getActiveRaffle runs every 5 s — index keeps it O(log n)
+    CREATE INDEX IF NOT EXISTS idx_raffles_status ON raffles(status);
 
+    -- Composite PK handles uniqueness; no separate index needed
+    CREATE TABLE IF NOT EXISTS raffle_entries (
+      raffle_id        INTEGER NOT NULL,
+      telegram_user_id TEXT    NOT NULL,
+      PRIMARY KEY (raffle_id, telegram_user_id)
+    );
+
+    -- One row per user; upsert on write
     CREATE TABLE IF NOT EXISTS raffle_creations (
-      telegram_user_id TEXT NOT NULL,
+      telegram_user_id TEXT    PRIMARY KEY,
       created_at       INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_raffle_creations_user ON raffle_creations(telegram_user_id);
 
     CREATE TABLE IF NOT EXISTS migrated_users (
       telegram_user_id TEXT PRIMARY KEY,
       migrated_at      INTEGER NOT NULL
     );
   `);
-  
+
   return db;
 }
 
-const CLAIM_COOLDOWN = (parseInt(process.env.COOLDOWN_HOURS) || 3) * 60 * 60 * 1000;
+// ─── Claim cooldown ───────────────────────────────────────────────────────────
+
+const CLAIM_COOLDOWN_MS = (parseInt(process.env.COOLDOWN_HOURS) || 3) * 60 * 60 * 1000;
 
 export async function canClaim(db, userId) {
-  const cutoff = Math.floor((Date.now() - CLAIM_COOLDOWN) / 1000);
   const row = await db.get(
-    `SELECT claimed_at FROM claims WHERE telegram_user_id = ? AND claimed_at > ? ORDER BY claimed_at DESC LIMIT 1`,
-    [String(userId), cutoff]
+    `SELECT claimed_at FROM claims WHERE telegram_user_id = ?`,
+    [String(userId)]
   );
-  
   if (!row) return { ok: true, remaining: 0 };
-  
-  const lastClaim = row.claimed_at * 1000;
-  const remaining = (lastClaim + CLAIM_COOLDOWN) - Date.now();
+  const remaining = (row.claimed_at * 1000 + CLAIM_COOLDOWN_MS) - Date.now();
   if (remaining <= 0) return { ok: true, remaining: 0 };
   return { ok: false, remaining };
 }
 
 export async function recordClaim(db, userId) {
-  const now = Math.floor(Date.now() / 1000);
   await db.run(
-    `INSERT INTO claims (telegram_user_id, claimed_at) VALUES (?, ?)`,
-    [String(userId), now]
+    `INSERT OR REPLACE INTO claims (telegram_user_id, claimed_at) VALUES (?, ?)`,
+    [String(userId), Math.floor(Date.now() / 1000)]
   );
 }
 
-// RAFFLE CREATION COOLDOWN
-const RAFFLE_CREATE_COOLDOWN = 3 * 60 * 60 * 1000; // 3 hours, always fixed
+// ─── Raffle-creation cooldown ─────────────────────────────────────────────────
+
+const RAFFLE_CREATE_COOLDOWN_MS = 3 * 60 * 60 * 1000;
 
 export async function canCreateRaffle(db, userId) {
-  const cutoff = Math.floor((Date.now() - RAFFLE_CREATE_COOLDOWN) / 1000);
   const row = await db.get(
-    `SELECT created_at FROM raffle_creations WHERE telegram_user_id = ? AND created_at > ? ORDER BY created_at DESC LIMIT 1`,
-    [String(userId), cutoff]
+    `SELECT created_at FROM raffle_creations WHERE telegram_user_id = ?`,
+    [String(userId)]
   );
   if (!row) return { ok: true, remaining: 0 };
-  const lastCreated = row.created_at * 1000;
-  const remaining = (lastCreated + RAFFLE_CREATE_COOLDOWN) - Date.now();
+  const remaining = (row.created_at * 1000 + RAFFLE_CREATE_COOLDOWN_MS) - Date.now();
   if (remaining <= 0) return { ok: true, remaining: 0 };
   return { ok: false, remaining };
 }
 
 export async function recordRaffleCreate(db, userId) {
-  const now = Math.floor(Date.now() / 1000);
   await db.run(
-    `INSERT INTO raffle_creations (telegram_user_id, created_at) VALUES (?, ?)`,
-    [String(userId), now]
+    `INSERT OR REPLACE INTO raffle_creations (telegram_user_id, created_at) VALUES (?, ?)`,
+    [String(userId), Math.floor(Date.now() / 1000)]
   );
 }
 
-// RAFFLE FUNCTIONS
+// ─── Raffle CRUD ──────────────────────────────────────────────────────────────
+
 export async function createRaffle(db, entryFeeChillarStr, endTimeSec) {
   const result = await db.run(
     `INSERT INTO raffles (entry_fee, end_time, status) VALUES (?, ?, 'active')`,
@@ -109,7 +109,7 @@ export async function getActiveRaffle(db) {
 
 export async function addRaffleEntry(db, raffleId, userId) {
   await db.run(
-    `INSERT INTO raffle_entries (raffle_id, telegram_user_id) VALUES (?, ?)`,
+    `INSERT OR IGNORE INTO raffle_entries (raffle_id, telegram_user_id) VALUES (?, ?)`,
     [raffleId, String(userId)]
   );
 }
@@ -138,7 +138,7 @@ export async function getRaffleEntries(db, raffleId) {
 
 export async function hasUserJoinedRaffle(db, raffleId, userId) {
   const row = await db.get(
-    `SELECT id FROM raffle_entries WHERE raffle_id = ? AND telegram_user_id = ? LIMIT 1`,
+    `SELECT 1 FROM raffle_entries WHERE raffle_id = ? AND telegram_user_id = ? LIMIT 1`,
     [raffleId, String(userId)]
   );
   return !!row;
@@ -176,19 +176,19 @@ export async function setRaffleTime(db, raffleId, endTimeSec) {
   );
 }
 
-// MIGRATION HELPERS
+// ─── Wallet migration helpers ─────────────────────────────────────────────────
+
 export async function hasUserMigrated(db, userId) {
   const row = await db.get(
-    `SELECT telegram_user_id FROM migrated_users WHERE telegram_user_id = ?`,
+    `SELECT 1 FROM migrated_users WHERE telegram_user_id = ?`,
     [String(userId)]
   );
   return !!row;
 }
 
 export async function markUserMigrated(db, userId) {
-  const now = Math.floor(Date.now() / 1000);
   await db.run(
     `INSERT OR IGNORE INTO migrated_users (telegram_user_id, migrated_at) VALUES (?, ?)`,
-    [String(userId), now]
+    [String(userId), Math.floor(Date.now() / 1000)]
   );
 }
