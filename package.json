@@ -1,6 +1,6 @@
 {
   "name": "sikka-airdrop-bot",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "description": "Sikka airdrop bot – Telegram edition",
   "type": "module",
   "main": "src/index.js",

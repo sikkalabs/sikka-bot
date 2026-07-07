@@ -238,9 +238,11 @@ async function main() {
         await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '🎉' }]);
       } catch (_) {}
 
-      await ctx.reply(
+      await replyThenDelete(
+        ctx,
         `✅ Sent *${formatSikkaDisplay(sentAmount)}* to \`${recipientAddr}\`\nTx: \`${txID}\``,
-        replyOpts
+        replyOpts,
+        100
       );
     } catch (err) {
       console.error(`Claim error for userId=${userId}:`, err);
