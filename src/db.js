@@ -121,13 +121,6 @@ export async function removeRaffleEntry(db, raffleId, userId) {
   );
 }
 
-export async function extendRaffleTime(db, raffleId, additionalSecs) {
-  await db.run(
-    `UPDATE raffles SET end_time = end_time + ? WHERE id = ?`,
-    [additionalSecs, raffleId]
-  );
-}
-
 export async function getRaffleEntries(db, raffleId) {
   const rows = await db.all(
     `SELECT telegram_user_id FROM raffle_entries WHERE raffle_id = ?`,

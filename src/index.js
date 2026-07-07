@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canCreateRaffle, recordRaffleCreate } from './db.js';
+import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canCreateRaffle, recordRaffleCreate } from './db.js';
 import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from 'sikka-sdk';
@@ -121,41 +121,64 @@ async function main() {
   
   const bot = new Telegraf(telegramToken);
   
-  bot.command(['start', 'help'], (ctx) => {
-    if (ctx.chat.type === 'private') {
-      ctx.reply("Welcome to your Sikka Wallet! \n\nCommands:\n/deposit - Get your deposit address\n/balance - Check your balance\n/send <amount | all> <address> - Send funds\n/sendall <address> - Send all funds");
-    } else {
-      ctx.reply("Welcome! Post your Sikka address or use /claim in this group to receive a free airdrop.");
+  // ── Help renderer ────────────────────────────────────────────────────────
+  // Returns HTML-formatted help text tailored to where the command was sent.
+  function helpText(isPrivate) {
+    if (isPrivate) {
+      return (
+        `👛 <b>Sikka Wallet</b>\n` +
+        `<i>Your personal on-chain wallet, right in Telegram.</i>\n\n` +
+
+        `<b>┌─ 📥 Receive ─────────────────┐</b>\n` +
+        `  <code>/deposit</code>\n` +
+        `  Get your personal SIKKA address\n\n` +
+
+        `<b>┌─ 📊 Balance ─────────────────┐</b>\n` +
+        `  <code>/balance</code>\n` +
+        `  Check your current balance\n\n` +
+
+        `<b>┌─ 📤 Send ────────────────────┐</b>\n` +
+        `  <code>/send &lt;amount&gt; &lt;address&gt;</code>\n` +
+        `  <code>/send all &lt;address&gt;</code>\n` +
+        `  <code>/sendall &lt;address&gt;</code>\n\n` +
+
+        `<b>──────────────────────────────</b>\n` +
+        `🎰 <i>Head to the group for faucet, raffle &amp; tips</i>`
+      );
     }
+
+    return (
+      `🤖 <b>Sikka Bot</b>\n` +
+      `<i>Commands available in this group</i>\n\n` +
+
+      `<b>┌─ 💧 Faucet ──────────────────┐</b>\n` +
+      `  <code>/claim</code> — Free SIKKA to your wallet\n` +
+      `  <code>/claim &lt;address&gt;</code> — Free SIKKA to any address\n\n` +
+
+      `<b>┌─ 🎰 Raffle ──────────────────┐</b>\n` +
+      `  <code>/raffle &lt;fee&gt;</code> — Start a raffle\n` +
+      `  <i>  min 100 chillar · once every 3 h · admins exempt</i>\n` +
+      `  <code>/join</code> — Enter the active raffle\n` +
+      `  <code>/prize</code> — Live pot &amp; countdown\n` +
+      `  <code>/rafflelist</code> — Last 5 results\n` +
+      `  <code>/cancel</code> — Cancel raffle <i>(admin only)</i>\n\n` +
+
+      `<b>┌─ 💸 Tips ────────────────────┐</b>\n` +
+      `  <code>/tip @username &lt;amount&gt;</code>\n` +
+      `  Send chillar to any group member\n\n` +
+
+      `<b>──────────────────────────────</b>\n` +
+      `👛 <i>DM @sikkalabsbot for wallet commands</i>`
+    );
+  }
+
+  bot.command(['start', 'help', 'sikka'], (ctx) => {
+    const isPrivate = ctx.chat.type === 'private';
+    // In a group, only respond to the configured group
+    if (!isPrivate && String(ctx.chat.id) !== telegramGroup) return;
+    ctx.reply(helpText(isPrivate), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
   });
 
-  bot.command('sikka', (ctx) => {
-    if (String(ctx.chat.id) !== telegramGroup) return;
-    ctx.reply(
-      `🤖 *Sikka Bot Commands*\n\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
-      `🚿 *Faucet (use in group)*\n` +
-      `/claim — Claim free SIKKA to your wallet\n` +
-      `/claim <address> — Claim free SIKKA to a specific address\n\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
-      `💰 *Wallet (use in DM)*\n` +
-      `/deposit — Get your deposit address\n` +
-      `/balance — Check your balance\n` +
-      `/send <amount> <address> — Send funds\n` +
-      `/sendall <address> — Send all funds\n\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
-      `🎰 *Raffle (use in group)*\n` +
-      `/raffle <entry\_fee> — Start a raffle (min 100 chillar, 3h cooldown)\n` +
-      `/join — Join the active raffle\n` +
-      `/prize — Show current raffle info & live countdown\n` +
-      `/rafflelist — Show last 5 completed raffles\n` +
-      `/cancel — Cancel the active raffle (admin only)\n` +
-      `/tip @username 100 — Tip someone chillar directly\n\n` +
-      `━━━━━━━━━━━━━━━━━━\n` +
-      `ℹ️ /sikka — Show this help message`,
-      { parse_mode: 'Markdown' }
-    );
-  });
 
   // /claim — faucet command using the bot wallet.
   // Usage: /claim            → sends to the user's personal wallet
@@ -535,24 +558,18 @@ async function main() {
       const nowAfter = Math.floor(Date.now() / 1000);
 
       if (newCount === 1) {
-        await ctx.reply(`✅ You joined the raffle! Waiting for at least 1 more player to start the timer.\nTx: ` + txID, replyOpts);
-      } else if (newCount === 2) {
+        // Still waiting for a second player — no timer yet
+        await ctx.reply(`✅ You joined the raffle!\nWaiting for 1 more player to start the timer.\nTx: ${txID}`, replyOpts);
+      } else {
+        // 2nd player or beyond — always reset clock to exactly 2 mins from now
         const newEndTime = nowAfter + 120;
         await setRaffleTime(db, active.id, newEndTime);
-        await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown', ...replyOpts });
-      } else {
-        if (Number(active.end_time) === 0) {
-          // Timer was never started (e.g. entries added outside normal /join flow) — start it now
-          const newEndTime = nowAfter + 120;
-          await setRaffleTime(db, active.id, newEndTime);
-          await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown', ...replyOpts });
-        } else if (active.end_time > 0 && nowAfter < active.end_time) {
-          // Fix #5: only extend if the timer hasn't already expired
-          await extendRaffleTime(db, active.id, 120);
-          await ctx.reply(`✅ You joined the raffle! Timer extended by 2 mins.\nTx: ` + txID, replyOpts);
-        } else {
-          await ctx.reply(`✅ You joined the raffle!\nTx: ` + txID, replyOpts);
-        }
+
+        const msg = newCount === 2
+          ? `✅ You joined the raffle!\n\n⏳ Timer started — 2 minutes remaining!\nTx: ${txID}`
+          : `✅ You joined the raffle!\n\n⏳ Timer reset — 2 minutes remaining!\nTx: ${txID}`;
+
+        await ctx.reply(msg, { parse_mode: 'Markdown', ...replyOpts });
       }
     } catch (err) {
       console.error(err);
