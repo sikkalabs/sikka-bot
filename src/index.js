@@ -29,6 +29,33 @@ function formatSikkaDisplay(chillar) {
   return `${formatSikka(chillar)} SIKKA`;
 }
 
+// Translates raw node/SDK errors into friendly human-readable messages.
+function humanizeSendError(err) {
+  const msg = err.message || '';
+
+  if (msg.includes('utxo_not_mature')) {
+    // Extract timestamps to compute the exact remaining wait time
+    const maturesMatch = msg.match(/matures at (\d+)/);
+    const spendingMatch = msg.match(/spending tx timestamp (\d+)/);
+    if (maturesMatch && spendingMatch) {
+      const remainingSecs = Math.max(0, parseInt(maturesMatch[1]) - parseInt(spendingMatch[1]));
+      const m = Math.floor(remainingSecs / 60);
+      const s = remainingSecs % 60;
+      const timeStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
+      return `Your coins just arrived and need a short settling period before they can be spent. Please wait about *${timeStr}* and try again.`;
+    }
+    return `Your coins just arrived and need a short settling period before they can be spent. Please wait a few minutes and try again.`;
+  }
+
+  if (msg.includes('faucet is empty') || msg.includes('balance too low')) {
+    return `The faucet is currently empty. Please try again later.`;
+  }
+
+  // Fallback: strip raw JSON blobs from the message for cleaner display
+  const clean = msg.replace(/:\s*\{.*\}/s, '').trim();
+  return `Something went wrong: ${clean}`;
+}
+
 async function getUserWallet(userId) {
   const walletSeed = process.env.WALLETSEED;
   if (!walletSeed) throw new Error("WALLETSEED env var is required for user wallet derivation");
@@ -141,7 +168,7 @@ async function main() {
       const { txID } = await client.send(amountChillar, address);
       await ctx.reply(`Successfully withdrew *${formatSikkaDisplay(amountChillar)}* to \`${address}\`\nTx: \`${txID}\``, { parse_mode: 'Markdown' });
     } catch (err) {
-      await ctx.reply(`Error withdrawing: ${err.message}`);
+      await ctx.reply(humanizeSendError(err), { parse_mode: 'Markdown' });
     }
   }
 
@@ -235,7 +262,7 @@ async function main() {
         txID = result.txID;
       } catch (sendErr) {
         await removeRaffleEntry(db, active.id, userId);
-        return ctx.reply(`Failed to send entry fee: ${sendErr.message}. Please try again.`);
+        return ctx.reply(humanizeSendError(sendErr), { parse_mode: 'Markdown' });
       }
 
       const entries = await getRaffleEntries(db, active.id);
