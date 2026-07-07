@@ -2,6 +2,7 @@ import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
 import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, getRecentRaffles, getRaffleById, setRaffleTime } from './db.js';
+import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from 'sikka-sdk';
 import { validateAddress, addressRe } from './bech32m.js';
@@ -91,6 +92,7 @@ async function main() {
     if (ctx.chat.type !== 'private') return;
     try {
       const uWallet = await getUserWallet(ctx.from.id);
+      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
       await ctx.reply(`Your personal SIKKA deposit address:\n\n\`${uWallet.address}\``, { parse_mode: 'Markdown' });
     } catch (err) {
       await ctx.reply(`Error: ${err.message}`);
@@ -101,6 +103,7 @@ async function main() {
     if (ctx.chat.type !== 'private') return;
     try {
       const uWallet = await getUserWallet(ctx.from.id);
+      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
       await ctx.reply(`Your balance: *${formatSikkaDisplay(BigInt(bal))}*\n\n[View History](https://1.sikkalabs.com/wallet/${uWallet.address})`, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
@@ -110,9 +113,11 @@ async function main() {
   });
 
   async function handleWithdraw(ctx, amountStr, address) {
+    const uWallet = await getUserWallet(ctx.from.id);
+    await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
+
     let amountChillar;
     if (amountStr.toLowerCase() === 'all') {
-      const uWallet = await getUserWallet(ctx.from.id);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
       amountChillar = BigInt(bal);
@@ -121,19 +126,18 @@ async function main() {
       if (isNaN(floatAmt) || floatAmt <= 0) return ctx.reply("Invalid amount");
       amountChillar = BigInt(Math.floor(floatAmt * Number(subunitsPerSikka)));
     }
-    
+
     if (amountChillar === 0n) {
       return ctx.reply("Cannot withdraw 0.");
     }
-    
+
     try {
-      const uWallet = await getUserWallet(ctx.from.id);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
       if (BigInt(bal) < amountChillar) {
         return ctx.reply(`Insufficient balance. You have ${formatSikkaDisplay(BigInt(bal))}`);
       }
-      
+
       const { txID } = await client.send(amountChillar, address);
       await ctx.reply(`Successfully withdrew *${formatSikkaDisplay(amountChillar)}* to \`${address}\`\nTx: \`${txID}\``, { parse_mode: 'Markdown' });
     } catch (err) {
@@ -197,6 +201,7 @@ async function main() {
       
       const entryFee = BigInt(active.entry_fee);
       const uWallet = await getUserWallet(ctx.from.id);
+      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
       

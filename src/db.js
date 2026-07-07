@@ -28,6 +28,11 @@ export async function initDB(dbPath) {
       raffle_id INTEGER NOT NULL,
       telegram_user_id TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS migrated_users (
+      telegram_user_id TEXT PRIMARY KEY,
+      migrated_at      INTEGER NOT NULL
+    );
   `);
   
   return db;
@@ -123,5 +128,22 @@ export async function setRaffleTime(db, raffleId, endTimeSec) {
   await db.run(
     `UPDATE raffles SET end_time = ? WHERE id = ?`,
     [endTimeSec, raffleId]
+  );
+}
+
+// MIGRATION HELPERS
+export async function hasUserMigrated(db, userId) {
+  const row = await db.get(
+    `SELECT telegram_user_id FROM migrated_users WHERE telegram_user_id = ?`,
+    [String(userId)]
+  );
+  return !!row;
+}
+
+export async function markUserMigrated(db, userId) {
+  const now = Math.floor(Date.now() / 1000);
+  await db.run(
+    `INSERT OR IGNORE INTO migrated_users (telegram_user_id, migrated_at) VALUES (?, ?)`,
+    [String(userId), now]
   );
 }
