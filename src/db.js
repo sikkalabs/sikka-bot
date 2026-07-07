@@ -19,7 +19,7 @@ export async function initDB(dbPath) {
   return db;
 }
 
-const CLAIM_COOLDOWN = (parseInt(process.env.COOLDOWN_HOURS) || 6) * 60 * 60 * 1000;
+const CLAIM_COOLDOWN = (parseInt(process.env.COOLDOWN_HOURS) || 3) * 60 * 60 * 1000;
 
 // Returns { ok: boolean, remaining: number (ms) }
 export async function canClaim(db, userId) {

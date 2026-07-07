@@ -15,7 +15,7 @@ When a user posts a message containing a valid Sikka address in the configured
 Telegram group, the bot:
 
 1. Validates the address (bech32m, correct HRP and version).
-2. Checks a per-user cooldown (default 6 hours) in the SQLite database.
+2. Checks a per-user cooldown (default 3 hours) in the SQLite database.
 3. Sends a configurable percentage (default 0.05%) of the faucet wallet's current balance to the recipient.
 4. Replies to the message with the transaction ID.
 
@@ -31,7 +31,7 @@ telegramtoken  - Telegram bot token (from @BotFather).
 telegramgroup  - Telegram Group ID to restrict the bot to (e.g. -5450027651).
 
 **Optional:**
-COOLDOWN_HOURS - Cooldown time in hours before a user can claim again (default: 6).
+COOLDOWN_HOURS - Cooldown time in hours before a user can claim again (default: 3).
 AIRDROP_DIVISOR- The fraction of the faucet's balance to send. For example, 2000 means 1/2000th or 0.05% (default: 2000).
 
 Powered by Sikka SDK
