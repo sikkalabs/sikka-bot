@@ -115,6 +115,29 @@ async function main() {
     }
   });
 
+  bot.command('sikka', (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    ctx.reply(
+      `🤖 *Sikka Bot Commands*\n\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `💰 *Wallet (use in DM)*\n` +
+      `/deposit — Get your deposit address\n` +
+      `/balance — Check your balance\n` +
+      `/send <amount> <address> — Send funds\n` +
+      `/sendall <address> — Send all funds\n\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `🎰 *Raffle (use in group)*\n` +
+      `/raffle <entry\\_fee> — Start a new raffle\n` +
+      `/join — Join the active raffle\n` +
+      `/prize — Show current raffle info & live countdown\n` +
+      `/rafflelist — Show last 5 completed raffles\n` +
+      `/cancel — Cancel the active raffle (admin only)\n\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
+      `ℹ️ /sikka — Show this help message`,
+      { parse_mode: 'Markdown' }
+    );
+  });
+
   bot.command('deposit', async (ctx) => {
     if (ctx.chat.type !== 'private') {
       return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot and type /deposit to get your deposit address.`, { reply_parameters: { message_id: ctx.message.message_id } });
