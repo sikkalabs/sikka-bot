@@ -156,10 +156,10 @@ async function main() {
       `  <code>/claim &lt;address&gt;</code> — Free SIKKA to any address\n\n` +
 
       `<b>┌─ 🎰 Raffle ──────────────────┐</b>\n` +
+      `  <code>/raffle</code> — Live pot &amp; countdown\n` +
       `  <code>/raffle &lt;fee&gt;</code> — Start a raffle\n` +
       `  <i>  min 100 chillar · once every 3 h · admins exempt</i>\n` +
       `  <code>/join</code> — Enter the active raffle\n` +
-      `  <code>/prize</code> — Live pot &amp; countdown\n` +
       `  <code>/rafflelist</code> — Last 5 results\n` +
       `  <code>/cancel</code> — Cancel raffle <i>(admin only)</i>\n\n` +
 
@@ -435,7 +435,35 @@ async function main() {
     if (String(ctx.chat.id) !== telegramGroup) return;
     const replyOpts = { reply_parameters: { message_id: ctx.message.message_id } };
     try {
-      const args = ctx.message.text.split(/\s+/).slice(1);
+      const args = ctx.message.text.split(/\s+/).slice(1).filter(Boolean);
+
+      // No args → show current raffle status (replaces the old /prize command)
+      if (args.length === 0) {
+        const active = await getActiveRaffle(db);
+        if (!active) return ctx.reply('No active raffle right now.', replyOpts);
+
+        const entries = await getRaffleEntries(db, active.id);
+        const entryFee = BigInt(active.entry_fee);
+        const totalPool = entryFee * BigInt(entries.length);
+        const prize = totalPool - (totalPool * 5n / 100n);
+        const now = Math.floor(Date.now() / 1000);
+        const timeText = Number(active.end_time) === 0
+          ? 'Waiting for 2 players to start...'
+          : (() => { const s = Math.max(0, active.end_time - now); return `${Math.floor(s/60)}m ${s%60}s`; })();
+
+        const text =
+          `🏆 **Current Raffle** 🏆\n\n` +
+          `👥 Players: ${entries.length}\n` +
+          `💰 Pool: ${totalPool} chillar\n` +
+          `🎁 Prize (−5%): ${prize} chillar\n\n` +
+          `⏳ **${timeText}**\n\n` +
+          `👉 /join@sikkalabsbot to enter!`;
+
+        const sent = await ctx.reply(text, { parse_mode: 'Markdown' });
+        lastPrizeMsgId = sent.message_id;
+        return;
+      }
+
       if (args.length !== 1) {
         return ctx.reply('Usage: /raffle <entry fee in chillar>\nExample: /raffle 500', replyOpts);
       }
@@ -580,50 +608,6 @@ async function main() {
   });
 
 
-  bot.command('prize', async (ctx) => {
-    if (String(ctx.chat.id) !== telegramGroup) return;
-    try {
-      const active = await getActiveRaffle(db);
-      if (!active) return ctx.reply("No active raffle.");
-
-      const entries = await getRaffleEntries(db, active.id);
-      const entryFee = BigInt(active.entry_fee);
-      const totalPool = entryFee * BigInt(entries.length);
-      const fee = totalPool * 5n / 100n;
-      const prize = totalPool - fee;
-
-      const now = Math.floor(Date.now() / 1000);
-      let timeText = "";
-      // Fix #8: use Number() coercion — SQLite may return end_time as string "0"
-      if (Number(active.end_time) === 0) {
-        timeText = "Waiting for 2 players to start...";
-      } else {
-        const timeLeft = Math.max(0, active.end_time - now);
-        const m = Math.floor(timeLeft / 60);
-        const s = timeLeft % 60;
-        timeText = `${m}m ${s}s`;
-      }
-
-      const text =
-        `🏆 **Current Raffle Info** 🏆\n\n` +
-        `👥 Participants: ${entries.length}\n` +
-        `💰 Total Pool: ${totalPool} chillar\n` +
-        `🎁 Prize (Minus 5%): ${prize} chillar\n\n` +
-        `⏳ Time Left: **${timeText}**\n\n` +
-        `👉 /join@sikkalabsbot to enter!`;
-
-      // Store the message ID so the 30s interval can edit it live
-      const sent = await ctx.reply(text, { parse_mode: 'Markdown' });
-      lastPrizeMsgId = sent.message_id;
-
-      // If there was a previous live prize message (e.g. auto-posted on creation),
-      // delete it so we don't have two live-updating messages at once.
-      // (We've already replaced lastPrizeMsgId above, so the old one will be orphaned.)
-    } catch (err) {
-      console.error(err);
-      ctx.reply(`Error: ${err.message}`);
-    }
-  });
 
   bot.command('rafflelist', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
