@@ -458,7 +458,7 @@ async function main() {
           return;
         }
 
-        const winnerIdx = Math.floor(Math.random() * entries.length);
+        const winnerIdx = crypto.randomInt(entries.length); // cryptographically secure
         const winnerId = entries[winnerIdx];
 
         const entryFee = BigInt(active.entry_fee);
