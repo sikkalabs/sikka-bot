@@ -280,32 +280,28 @@ async function main() {
 
   bot.command('tip', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
+    const replyOpts = { reply_parameters: { message_id: ctx.message.message_id } };
 
-    // Extract mention entity with a user id
     const entities = ctx.message.entities || [];
-    const mentionEntity = entities.find(e => e.type === 'mention' || e.type === 'text_mention');
+    const mentionEntity = entities.find(e => e.type === 'mention');
 
+    if (!mentionEntity) {
+      return ctx.reply(`❌ Usage: /tip @username 100\nOnly users with a @username can be tipped.`, replyOpts);
+    }
+
+    // Extract the @username from the message text
+    const username = ctx.message.text.slice(
+      mentionEntity.offset, mentionEntity.offset + mentionEntity.length
+    ); // e.g. "@john"
+
+    // Resolve user ID via Telegram API
     let recipientId, recipientName;
-    if (mentionEntity?.type === 'text_mention') {
-      recipientId = mentionEntity.user.id;
-      recipientName = mentionEntity.user.first_name;
-    } else if (mentionEntity?.type === 'mention') {
-      // @username mention — user object not always available, need to parse args
-      const usernameInText = ctx.message.text.slice(
-        mentionEntity.offset, mentionEntity.offset + mentionEntity.length
-      );
-      // Try to get user from the mention entity's user field if available
-      if (mentionEntity.user) {
-        recipientId = mentionEntity.user.id;
-        recipientName = mentionEntity.user.first_name;
-      } else {
-        return ctx.reply(
-          `❌ Couldn't resolve that user. Ask them to send a message in the group first, then try again.`,
-          { reply_parameters: { message_id: ctx.message.message_id } }
-        );
-      }
-    } else {
-      return ctx.reply(`❌ Usage: /tip @username 100`, { reply_parameters: { message_id: ctx.message.message_id } });
+    try {
+      const chat = await ctx.telegram.getChat(username);
+      recipientId = chat.id;
+      recipientName = chat.first_name || chat.username;
+    } catch {
+      return ctx.reply(`❌ Couldn't find user ${username}. Make sure they've interacted with Telegram.`, replyOpts);
     }
 
     // Amount is the last token
@@ -695,18 +691,16 @@ async function main() {
     // Handle plain-text tip: "tip @username 100"
     if (/^tip\s+/i.test(text)) {
       const entities = ctx.message.entities || [];
-      const mentionEntity = entities.find(e => e.type === 'mention' || e.type === 'text_mention');
-
+      const mentionEntity = entities.find(e => e.type === 'mention');
       if (mentionEntity) {
+        const username = text.slice(mentionEntity.offset, mentionEntity.offset + mentionEntity.length);
         let recipientId, recipientName;
-        if (mentionEntity.type === 'text_mention') {
-          recipientId = mentionEntity.user.id;
-          recipientName = mentionEntity.user.first_name;
-        } else if (mentionEntity.type === 'mention' && mentionEntity.user) {
-          recipientId = mentionEntity.user.id;
-          recipientName = mentionEntity.user.first_name;
-        } else {
-          await ctx.reply(`❌ Couldn't resolve that user. Ask them to send a message in the group first.`,
+        try {
+          const chat = await ctx.telegram.getChat(username);
+          recipientId = chat.id;
+          recipientName = chat.first_name || chat.username;
+        } catch {
+          await ctx.reply(`❌ Couldn't find user ${username}.`,
             { reply_parameters: { message_id: ctx.message.message_id } });
           return;
         }
