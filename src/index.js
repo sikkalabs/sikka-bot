@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { initDB, canClaim, recordClaim } from './db.js';
+import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, extendRaffleTime, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, getRecentRaffles, getRaffleById, setRaffleTime } from './db.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from 'sikka-sdk';
 import { validateAddress, addressRe } from './bech32m.js';
@@ -156,6 +156,192 @@ async function main() {
     }
     await handleWithdraw(ctx, 'all', args[0]);
   });
+
+
+  // RAFFLE LOGIC
+  bot.command('raffle', async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    try {
+      const chatAdmins = await ctx.getChatAdministrators();
+      const isAdmin = chatAdmins.some(admin => admin.user.id === ctx.from.id);
+      if (!isAdmin && ctx.from.id.toString() !== '123456789') { // basic admin check
+        return ctx.reply("Only admins can start a raffle.");
+      }
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      if (args.length !== 1) return ctx.reply("Usage: /raffle <amount in chillar>");
+      const entryFee = BigInt(args[0]);
+      if (entryFee <= 0n) return ctx.reply("Invalid amount");
+      
+      const active = await getActiveRaffle(db);
+      if (active) return ctx.reply("A raffle is already active!");
+      
+      const endTimeSec = 0; // 0 means waiting for players
+      const raffleId = await createRaffle(db, entryFee.toString(), endTimeSec);
+      await ctx.reply(`🎟 **New Raffle Started!** 🎟\n\nEntry Fee: ${entryFee} chillar\nJoin with /join\nWaiting for at least 2 players to start the timer!`, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error(err);
+      ctx.reply(`Error: ${err.message}`);
+    }
+  });
+
+  bot.command('join', async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    try {
+      const active = await getActiveRaffle(db);
+      if (!active) return ctx.reply("No active raffle to join.");
+      
+      const hasJoined = await hasUserJoinedRaffle(db, active.id, ctx.from.id);
+      if (hasJoined) return ctx.reply("You have already joined this raffle!");
+      
+      const entryFee = BigInt(active.entry_fee);
+      const uWallet = await getUserWallet(ctx.from.id);
+      const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
+      const bal = await client.balance();
+      
+      if (BigInt(bal) < entryFee) {
+        return ctx.reply(`You don't have enough balance. You need ${entryFee} chillar, but have ${bal} chillar.\nDeposit to: \`${uWallet.address}\``, { parse_mode: 'Markdown' });
+      }
+      
+      const { txID } = await client.send(entryFee, wallet.address); // send to faucet wallet
+      
+      await addRaffleEntry(db, active.id, ctx.from.id);
+      
+      const entries = await getRaffleEntries(db, active.id);
+      const newCount = entries.length;
+      
+      if (newCount === 1) {
+         await ctx.reply(`✅ You joined the raffle! Waiting for at least 1 more player to start the timer.\nTx: ` + txID);
+      } else if (newCount === 2) {
+         const newEndTime = Math.floor(Date.now() / 1000) + 120;
+         await setRaffleTime(db, active.id, newEndTime);
+         await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown' });
+      } else {
+         await extendRaffleTime(db, active.id, 120);
+         await ctx.reply(`✅ You joined the raffle! Timer extended by 2 mins.\nTx: ` + txID);
+      }
+    } catch (err) {
+      console.error(err);
+      ctx.reply(`Error joining: ${err.message}`);
+    }
+  });
+
+  bot.command('prize', async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    try {
+      const active = await getActiveRaffle(db);
+      if (!active) return ctx.reply("No active raffle.");
+      
+      const entries = await getRaffleEntries(db, active.id);
+      const entryFee = BigInt(active.entry_fee);
+      const totalPool = entryFee * BigInt(entries.length);
+      const fee = totalPool * 5n / 100n;
+      const prize = totalPool - fee;
+      
+      const now = Math.floor(Date.now() / 1000);
+      
+      let timeText = "";
+      if (active.end_time === 0) {
+         timeText = "Waiting for 2 players to start...";
+      } else {
+         const timeLeft = Math.max(0, active.end_time - now);
+         const m = Math.floor(timeLeft / 60);
+         const s = timeLeft % 60;
+         timeText = `${m}m ${s}s`;
+      }
+      
+      await ctx.reply(`🏆 **Current Raffle Info** 🏆\n\nParticipants: ${entries.length}\nTotal Pool: ${totalPool} chillar\nPrize (Minus 5%): ${prize} chillar\n\nTime Left: ${timeText}`, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error(err);
+      ctx.reply(`Error: ${err.message}`);
+    }
+  });
+
+  bot.command('rafflelist', async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    try {
+      const recent = await getRecentRaffles(db, 5);
+      if (recent.length === 0) return ctx.reply("No past raffles found.");
+      
+      let msg = "📜 **Last 5 Raffles** 📜\n\n";
+      for (const r of recent) {
+        msg += `/raffle_${r.id} - Prize: ${r.prize_amount} chillar\n`;
+      }
+      await ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error(err);
+      ctx.reply(`Error: ${err.message}`);
+    }
+  });
+
+  // Handle dynamic command for raffle details
+  bot.hears(/^\/raffle_(\d+)$/, async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    try {
+      const rId = parseInt(ctx.match[1]);
+      const r = await getRaffleById(db, rId);
+      if (!r) return ctx.reply("Raffle not found.");
+      
+      const entries = await getRaffleEntries(db, r.id);
+      
+      let msg = `ℹ️ **Raffle #${r.id} Details**\n\n`;
+      msg += `Status: ${r.status}\n`;
+      msg += `Entry Fee: ${r.entry_fee} chillar\n`;
+      msg += `Participants: ${entries.length}\n`;
+      if (r.winner_id) msg += `Winner ID: ${r.winner_id}\n`;
+      if (r.prize_amount) msg += `Prize Won: ${r.prize_amount} chillar\n`;
+      
+      await ctx.reply(msg, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error(err);
+      ctx.reply(`Error: ${err.message}`);
+    }
+  });
+
+  // Background loop to resolve raffles
+  setInterval(async () => {
+    try {
+      const active = await getActiveRaffle(db);
+      if (!active) return;
+      
+      const now = Math.floor(Date.now() / 1000);
+      if (active.end_time > 0 && now >= active.end_time) {
+        // Resolve it
+        const entries = await getRaffleEntries(db, active.id);
+        if (entries.length === 0) {
+           await closeRaffle(db, active.id, "none", "0");
+           bot.telegram.sendMessage(telegramGroup, "The raffle has ended with no participants! 😢").catch(console.error);
+           return;
+        }
+        
+        const winnerIdx = Math.floor(Math.random() * entries.length);
+        const winnerId = entries[winnerIdx];
+        
+        const entryFee = BigInt(active.entry_fee);
+        const totalPool = entryFee * BigInt(entries.length);
+        const fee = totalPool * 5n / 100n;
+        const prize = totalPool - fee;
+        
+        await closeRaffle(db, active.id, winnerId, prize.toString());
+        
+        // Announce winner
+        let announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [User](tg://user?id=${winnerId})\nPrize: ${prize} chillar!\n\nSending funds...`;
+        const sentMsg = await bot.telegram.sendMessage(telegramGroup, announceMsg, { parse_mode: 'Markdown' }).catch(console.error);
+        
+        // Attempt to send funds
+        try {
+           const winnerWallet = await getUserWallet(winnerId);
+           const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
+           const { txID } = await fclient.send(prize, winnerWallet.address);
+           bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\nThey can type /balance to check.`, { parse_mode: 'Markdown', reply_parameters: { message_id: sentMsg.message_id } }).catch(console.error);
+        } catch (e) {
+           console.error("Failed to send prize:", e);
+           bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).catch(console.error);
+        }
+      }
+    } catch (e) {
+      console.error("Raffle resolution error:", e);
+    }
+  }, 5000);
 
   const processingUsers = new Set();
   
