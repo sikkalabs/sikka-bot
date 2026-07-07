@@ -249,7 +249,18 @@ async function main() {
       const bal = await client.balance();
 
       if (BigInt(bal) < entryFee) {
-        return ctx.reply(`You don't have enough balance. You need ${entryFee} chillar, but have ${bal} chillar.\nDeposit to: \`${uWallet.address}\``, { parse_mode: 'Markdown' });
+        // Try to DM them the deposit address so they can top up privately.
+        // Silently ignored if they haven't started the bot in DM yet.
+        ctx.telegram.sendMessage(
+          userId,
+          `💳 *You need ${entryFee} chillar to join the raffle.*\n\nYour deposit address:\n\`${uWallet.address}\`\n\nSend funds there and then try /join again!`,
+          { parse_mode: 'Markdown' }
+        ).catch(() => {});
+
+        return ctx.reply(
+          `You don't have enough balance. You need *${entryFee} chillar*, but have *${bal} chillar*.\n📩 Check your DMs for your deposit address!`,
+          { parse_mode: 'Markdown' }
+        );
       }
 
       // Fix #3: record entry in DB FIRST, then send funds.
@@ -448,7 +459,7 @@ async function main() {
           const { txID } = await fclient.send(prize, winnerWallet.address);
           // Fix #7: guard against sentMsg being undefined if the announce message failed
           const replyParams = sentMsg ? { reply_parameters: { message_id: sentMsg.message_id } } : {};
-          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\nThey can type /balance to check.`, { parse_mode: 'Markdown', ...replyParams }).catch(console.error);
+          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\n\n🤫 Winner — DM @sikkalabsbot and type /balance to check your funds privately!`, { parse_mode: 'Markdown', ...replyParams }).catch(console.error);
         } catch (e) {
           console.error("Failed to send prize:", e);
           bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).catch(console.error);
