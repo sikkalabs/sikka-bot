@@ -29,9 +29,9 @@ function formatSikkaDisplay(chillar) {
 }
 
 async function getUserWallet(userId) {
-  const baseSeed = process.env.WALLETSEED || process.env.PRIVATEKEY;
-  if (!baseSeed) throw new Error("No seed configured for wallets");
-  const derivedHex = crypto.createHash('sha256').update(baseSeed + String(userId)).digest('hex');
+  const walletSeed = process.env.WALLETSEED;
+  if (!walletSeed) throw new Error("WALLETSEED env var is required for user wallet derivation");
+  const derivedHex = crypto.createHash('sha256').update(walletSeed + String(userId)).digest('hex');
   return await createWallet(derivedHex);
 }
 
@@ -58,11 +58,13 @@ async function main() {
   const privKeyHex = process.env.PRIVATEKEY || process.env.privatekey;
   const telegramToken = process.env.TELEGRAMTOKEN || process.env.telegramtoken;
   const telegramGroup = process.env.TELEGRAMGROUP || process.env.telegramgroup;
-  
+  const walletSeed = process.env.WALLETSEED;
+
   if (!nodeURLsRaw) throw new Error("env var 'SIKKANODE' is required");
   if (!privKeyHex) throw new Error("env var 'PRIVATEKEY' is required");
   if (!telegramToken) throw new Error("env var 'TELEGRAMTOKEN' is required");
   if (!telegramGroup) throw new Error("env var 'TELEGRAMGROUP' is required");
+  if (!walletSeed) throw new Error("env var 'WALLETSEED' is required for user wallet derivation");
   
   const nodeURLs = nodeURLsRaw.split(',').map(s => s.trim()).filter(Boolean);
   const selectedNodeURL = await selectBestNodeURL(nodeURLs);
