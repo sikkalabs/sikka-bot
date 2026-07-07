@@ -484,6 +484,72 @@ async function main() {
     }
   }, 5000);
 
+  // Live raffle status — edits a single group message every 30s with the countdown.
+  // Editing instead of posting keeps the chat clean while still driving engagement.
+  let raffleStatusMsgId = null;
+
+  setInterval(async () => {
+    try {
+      const active = await getActiveRaffle(db);
+
+      // No active raffle — clean up the status message if one exists
+      if (!active) {
+        if (raffleStatusMsgId) {
+          await bot.telegram.deleteMessage(telegramGroup, raffleStatusMsgId).catch(() => {});
+          raffleStatusMsgId = null;
+        }
+        return;
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+
+      // Timer not started yet (< 2 players) — show a waiting message
+      let timeText;
+      if (Number(active.end_time) === 0) {
+        timeText = 'Waiting for more players...';
+      } else if (now >= active.end_time) {
+        return; // about to be resolved by the other interval, don't interfere
+      } else {
+        const timeLeft = active.end_time - now;
+        const m = Math.floor(timeLeft / 60);
+        const s = timeLeft % 60;
+        timeText = `${m}m ${s}s`;
+      }
+
+      const entries = await getRaffleEntries(db, active.id);
+      const entryFee = BigInt(active.entry_fee);
+      const totalPool = entryFee * BigInt(entries.length);
+      const fee = totalPool * 5n / 100n;
+      const prize = totalPool - fee;
+
+      const statusText =
+        `🏆 **Current Raffle** 🏆\n\n` +
+        `👥 Participants: ${entries.length}\n` +
+        `💰 Total Pool: ${totalPool} chillar\n` +
+        `🎁 Prize (Minus 5%): ${prize} chillar\n\n` +
+        `⏳ Time Left: **${timeText}**\n\n` +
+        `👉 /join@sikkalabsbot to enter!`;
+
+      if (raffleStatusMsgId) {
+        // Try to edit the existing message
+        await bot.telegram.editMessageText(
+          telegramGroup, raffleStatusMsgId, undefined,
+          statusText, { parse_mode: 'Markdown' }
+        ).catch(async () => {
+          // Message was deleted or too old — post a fresh one
+          raffleStatusMsgId = null;
+        });
+      }
+
+      if (!raffleStatusMsgId) {
+        const msg = await bot.telegram.sendMessage(telegramGroup, statusText, { parse_mode: 'Markdown' });
+        raffleStatusMsgId = msg.message_id;
+      }
+    } catch (e) {
+      console.error('Raffle status update error:', e);
+    }
+  }, 30000);
+
   const processingUsers = new Set();
   const joiningUsers = new Set(); // per-user lock for /join (Fix #1)
   
