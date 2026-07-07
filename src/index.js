@@ -116,7 +116,9 @@ async function main() {
   });
 
   bot.command('deposit', async (ctx) => {
-    if (ctx.chat.type !== 'private') return;
+    if (ctx.chat.type !== 'private') {
+      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot and type /deposit to get your deposit address.`, { reply_parameters: { message_id: ctx.message.message_id } });
+    }
     try {
       const uWallet = await getUserWallet(ctx.from.id);
       await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
@@ -127,7 +129,9 @@ async function main() {
   });
 
   bot.command('balance', async (ctx) => {
-    if (ctx.chat.type !== 'private') return;
+    if (ctx.chat.type !== 'private') {
+      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot and type /balance to check your balance.`, { reply_parameters: { message_id: ctx.message.message_id } });
+    }
     try {
       const uWallet = await getUserWallet(ctx.from.id);
       await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
@@ -173,7 +177,9 @@ async function main() {
   }
 
   bot.command('send', async (ctx) => {
-    if (ctx.chat.type !== 'private') return;
+    if (ctx.chat.type !== 'private') {
+      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
+    }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 2) {
       return ctx.reply("Usage: /send <amount> <address>\nExample: /send 5 sikka1...\n(You can also use 'all' as the amount to withdraw your entire balance: /send all sikka1...)");
@@ -182,7 +188,9 @@ async function main() {
   });
 
   bot.command('sendall', async (ctx) => {
-    if (ctx.chat.type !== 'private') return;
+    if (ctx.chat.type !== 'private') {
+      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
+    }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 1) {
       return ctx.reply("Usage: /sendall <address>\nExample: /sendall sikka1...");
