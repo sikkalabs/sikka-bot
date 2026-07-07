@@ -130,11 +130,11 @@ async function main() {
         `<i>Your personal on-chain wallet, right in Telegram.</i>\n\n` +
 
         `<b>┌─ 📥 Receive ─────────────────┐</b>\n` +
-        `  <code>/deposit</code>\n` +
+        `  /deposit\n` +
         `  Get your personal SIKKA address\n\n` +
 
         `<b>┌─ 📊 Balance ─────────────────┐</b>\n` +
-        `  <code>/balance</code>\n` +
+        `  /balance\n` +
         `  Check your current balance\n\n` +
 
         `<b>┌─ 📤 Send ────────────────────┐</b>\n` +
