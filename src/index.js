@@ -9,6 +9,20 @@ import { validateAddress, addressRe } from './bech32m.js';
 import path from 'path';
 import crypto from 'crypto';
 
+// Helper: send a reply then delete both the trigger and the reply after `delaySec` seconds.
+async function replyThenDelete(ctx, text, opts = {}, delaySec = 30) {
+  const reply = await ctx.reply(text, opts);
+  const chatId = ctx.chat.id;
+  const triggerMsgId = ctx.message?.message_id;
+  setTimeout(async () => {
+    try { await ctx.telegram.deleteMessage(chatId, reply.message_id); } catch (_) {}
+    if (triggerMsgId) {
+      try { await ctx.telegram.deleteMessage(chatId, triggerMsgId); } catch (_) {}
+    }
+  }, delaySec * 1000);
+  return reply;
+}
+
 dotenv.config();
 
 const subunitsPerSikka = 10_000_000_000n;
@@ -111,7 +125,7 @@ async function main() {
     if (ctx.chat.type === 'private') {
       ctx.reply("Welcome to your Sikka Wallet! \n\nCommands:\n/deposit - Get your deposit address\n/balance - Check your balance\n/send <amount | all> <address> - Send funds\n/sendall <address> - Send all funds");
     } else {
-      ctx.reply("Welcome! Post your Sikka address in this group to receive a free airdrop.");
+      ctx.reply("Welcome! Post your Sikka address or use /claim in this group to receive a free airdrop.");
     }
   });
 
@@ -120,6 +134,10 @@ async function main() {
     ctx.reply(
       `🤖 *Sikka Bot Commands*\n\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
+      `🚿 *Faucet (use in group)*\n` +
+      `/claim — Claim free SIKKA to your wallet\n` +
+      `/claim <address> — Claim free SIKKA to a specific address\n\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
       `💰 *Wallet (use in DM)*\n` +
       `/deposit — Get your deposit address\n` +
       `/balance — Check your balance\n` +
@@ -127,7 +145,7 @@ async function main() {
       `/sendall <address> — Send all funds\n\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `🎰 *Raffle (use in group)*\n` +
-      `/raffle <entry\\_fee> — Start a new raffle\n` +
+      `/raffle <entry\_fee> — Start a new raffle\n` +
       `/join — Join the active raffle\n` +
       `/prize — Show current raffle info & live countdown\n` +
       `/rafflelist — Show last 5 completed raffles\n` +
@@ -137,6 +155,77 @@ async function main() {
       `ℹ️ /sikka — Show this help message`,
       { parse_mode: 'Markdown' }
     );
+  });
+
+  // /claim — faucet command using the bot wallet.
+  // Usage: /claim            → sends to the user's personal wallet
+  //        /claim <address>  → sends to a specific sikka address
+  bot.command('claim', async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    const userId = ctx.from.id;
+    const replyOpts = { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' };
+
+    // Determine recipient address
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    let recipientAddr;
+    if (args.length === 0) {
+      // No address given — use the user's personal wallet
+      try {
+        const uWallet = await getUserWallet(userId);
+        await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, userId, uWallet);
+        recipientAddr = uWallet.address;
+      } catch (err) {
+        return replyThenDelete(ctx, `❌ Could not resolve your wallet: ${err.message}`, replyOpts);
+      }
+    } else {
+      // Address provided — validate it
+      try {
+        recipientAddr = validateAddress(args[0]);
+      } catch (_) {
+        return replyThenDelete(ctx, `❌ Invalid address. Usage: /claim or /claim <address>`, replyOpts);
+      }
+    }
+
+    if (recipientAddr === wallet.address) {
+      return replyThenDelete(ctx, `❌ You cannot claim to the faucet wallet itself.`, replyOpts);
+    }
+
+    // Cooldown check
+    const claimStatus = await canClaim(db, userId);
+    if (!claimStatus.ok) {
+      const remainingHours = Math.floor(claimStatus.remaining / (60 * 60 * 1000));
+      const remainingMins = Math.floor((claimStatus.remaining % (60 * 60 * 1000)) / (60 * 1000));
+      return replyThenDelete(
+        ctx,
+        `⏳ You already claimed recently. Try again in *${remainingHours}h ${remainingMins}m*.`,
+        replyOpts
+      );
+    }
+
+    // Show processing reaction
+    try {
+      await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '⏳' }]);
+    } catch (_) {}
+
+    try {
+      const { txID, sentAmount } = await sendAirdrop(selectedNodeURL, wallet, recipientAddr);
+      await recordClaim(db, userId);
+
+      try {
+        await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '🎉' }]);
+      } catch (_) {}
+
+      await ctx.reply(
+        `✅ Sent *${formatSikkaDisplay(sentAmount)}* to \`${recipientAddr}\`\nTx: \`${txID}\``,
+        replyOpts
+      );
+    } catch (err) {
+      console.error(`Claim error for userId=${userId}:`, err);
+      try {
+        await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '❌' }]);
+      } catch (_) {}
+      await replyThenDelete(ctx, `❌ ${humanizeSendError(err)}`, replyOpts);
+    }
   });
 
   bot.command('deposit', async (ctx) => {
@@ -301,7 +390,11 @@ async function main() {
       recipientId = cached.id;
       recipientName = cached.firstName;
     } else {
-      return ctx.reply(`❌ Couldn't resolve ${username}. They need to send a message in the group first so the bot can see them.`, replyOpts);
+      return replyThenDelete(
+        ctx,
+        `❌ Couldn't resolve ${username}. They need to send a message in the group first so the bot can see them.`,
+        replyOpts
+      );
     }
 
     // Amount is the last token
@@ -331,6 +424,17 @@ async function main() {
       const endTimeSec = 0; // 0 means waiting for players
       const raffleId = await createRaffle(db, entryFee.toString(), endTimeSec);
       await ctx.reply(`🎟 **New Raffle Started!** 🎟\n\nEntry Fee: ${entryFee} chillar\nJoin with /join\nWaiting for at least 2 players to start the timer!`, { parse_mode: 'Markdown' });
+
+      // Automatically post live /prize info as soon as the raffle is created
+      const prizeText =
+        `🏆 **Current Raffle Info** 🏆\n\n` +
+        `👥 Participants: 0\n` +
+        `💰 Total Pool: 0 chillar\n` +
+        `🎁 Prize (Minus 5%): 0 chillar\n\n` +
+        `⏳ Time Left: **Waiting for 2 players to start...**\n\n` +
+        `👉 /join@sikkalabsbot to enter!`;
+      const prizeMsg = await bot.telegram.sendMessage(telegramGroup, prizeText, { parse_mode: 'Markdown' });
+      lastPrizeMsgId = prizeMsg.message_id;
     } catch (err) {
       console.error(err);
       ctx.reply(`Error: ${err.message}`);
@@ -394,7 +498,7 @@ async function main() {
         txID = result.txID;
       } catch (sendErr) {
         await removeRaffleEntry(db, active.id, userId);
-        return ctx.reply(humanizeSendError(sendErr), { parse_mode: 'Markdown', ...replyOpts });
+        return replyThenDelete(ctx, humanizeSendError(sendErr), { parse_mode: 'Markdown', ...replyOpts });
       }
 
       const entries = await getRaffleEntries(db, active.id);
@@ -465,6 +569,10 @@ async function main() {
       // Store the message ID so the 30s interval can edit it live
       const sent = await ctx.reply(text, { parse_mode: 'Markdown' });
       lastPrizeMsgId = sent.message_id;
+
+      // If there was a previous live prize message (e.g. auto-posted on creation),
+      // delete it so we don't have two live-updating messages at once.
+      // (We've already replaced lastPrizeMsgId above, so the old one will be orphaned.)
     } catch (err) {
       console.error(err);
       ctx.reply(`Error: ${err.message}`);
@@ -621,7 +729,7 @@ async function main() {
   }, 5000);
 
   // Live raffle status — edits the last /prize message every 30s.
-  // If nobody has typed /prize yet, the interval stays silent.
+  // Auto-posted on raffle creation; also updated when someone types /prize.
   let lastPrizeMsgId = null;
   const usernameCache = new Map(); // username (lowercase, no @) → { id, firstName }
 
@@ -706,7 +814,8 @@ async function main() {
           recipientId = cached.id;
           recipientName = cached.firstName;
         } else {
-          await ctx.reply(
+          await replyThenDelete(
+            ctx,
             `❌ Couldn't resolve ${username}. They need to send a message in the group first so the bot can see them.`,
             { reply_parameters: { message_id: ctx.message.message_id } }
           );
@@ -780,7 +889,12 @@ async function main() {
       try {
         await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '❌' }]);
       } catch (e) {}
-      await ctx.reply(`Sorry, could not process the airdrop: ${err.message}`, { reply_parameters: { message_id: ctx.message.message_id } });
+      // Auto-delete settling-period and similar transient error messages after 30s
+      await replyThenDelete(
+        ctx,
+        `Sorry, could not process the airdrop: ${humanizeSendError(err)}`,
+        { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' }
+      );
       // Wait for 1s to avoid spamming if there's a flood
       await new Promise(r => setTimeout(r, 1000));
     } finally {
