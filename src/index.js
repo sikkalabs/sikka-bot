@@ -450,7 +450,19 @@ async function main() {
         // Close BEFORE announcing so a second tick never sees this raffle as active
         await closeRaffle(db, active.id, winnerId, prize.toString());
 
-        const announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [User](tg://user?id=${winnerId})\nPrize: ${prize} chillar!\n\nSending funds...`;
+        // Resolve winner's display name — prefer @username, fall back to first name
+        let winnerName = 'Winner';
+        try {
+          const member = await bot.telegram.getChatMember(telegramGroup, winnerId);
+          const u = member.user;
+          winnerName = u.username
+            ? `@${u.username}`
+            : `${u.first_name}${u.last_name ? ' ' + u.last_name : ''}`;
+        } catch (e) {
+          console.error('Could not fetch winner name:', e.message);
+        }
+
+        const announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [${winnerName}](tg://user?id=${winnerId})\nPrize: ${prize} chillar!\n\nSending funds...`;
         const sentMsg = await bot.telegram.sendMessage(telegramGroup, announceMsg, { parse_mode: 'Markdown' }).catch(console.error);
 
         try {
