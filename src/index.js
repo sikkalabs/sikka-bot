@@ -158,14 +158,14 @@ async function main() {
       `<b>┌─ 🎰 Raffle ──────────────────┐</b>\n` +
       `  <code>/raffle</code> — Live pot &amp; countdown\n` +
       `  <code>/raffle &lt;fee&gt;</code> — Start a raffle\n` +
-      `  <i>  min 100 chillar · once every 3 h · admins exempt</i>\n` +
+      `  <i>  min 1 SIKKA · once every 3 h · admins exempt</i>\n` +
       `  <code>/join</code> — Enter the active raffle\n` +
       `  <code>/rafflelist</code> — Last 5 results\n` +
       `  <code>/cancel</code> — Cancel raffle <i>(admin only)</i>\n\n` +
 
       `<b>┌─ 💸 Tips ────────────────────┐</b>\n` +
       `  <code>/tip @username &lt;amount&gt;</code>\n` +
-      `  Send chillar to any group member\n\n` +
+      `  Send SIKKA to any group member\n\n` +
 
       `<b>──────────────────────────────</b>\n` +
       `👛 <i>DM @sikkalabsbot for wallet commands</i>`
@@ -344,11 +344,11 @@ async function main() {
       return ctx.reply(`❌ You can't tip yourself!`, replyOpts);
     }
 
-    const amount = parseInt(amountStr, 10);
-    if (isNaN(amount) || amount <= 0) {
-      return ctx.reply(`❌ Invalid amount. Usage: /tip @username 100`, replyOpts);
+    const floatAmt = parseFloat(amountStr);
+    if (isNaN(floatAmt) || floatAmt <= 0) {
+      return ctx.reply(`❌ Invalid amount. Usage: /tip @username 5`, replyOpts);
     }
-    const amountChillar = BigInt(amount);
+    const amountChillar = BigInt(Math.floor(floatAmt * Number(subunitsPerSikka)));
 
     try {
       const senderWallet = await getUserWallet(senderId);
@@ -360,11 +360,11 @@ async function main() {
       if (BigInt(bal) < amountChillar) {
         ctx.telegram.sendMessage(
           senderId,
-          `💳 *You tried to tip ${amount} chillar but only have ${bal}.*\n\nYour deposit address:\n\`${senderWallet.address}\``,
+          `💳 *You tried to tip ${formatSikkaDisplay(amountChillar)} but only have ${formatSikkaDisplay(BigInt(bal))}.*\n\nYour deposit address:\n\`${senderWallet.address}\``,
           { parse_mode: 'Markdown' }
         ).catch(() => {});
         return ctx.reply(
-          `❌ Insufficient balance. You have *${bal} chillar* but tried to tip *${amount} chillar*.\n📩 Check your DMs for your deposit address!`,
+          `❌ Insufficient balance. You have *${formatSikkaDisplay(BigInt(bal))}* but tried to tip *${formatSikkaDisplay(amountChillar)}*.\n📩 Check your DMs for your deposit address!`,
           replyOpts
         );
       }
@@ -374,14 +374,14 @@ async function main() {
 
       // Public confirmation in group
       await ctx.reply(
-        `💸 *${ctx.from.first_name}* tipped *${recipientName}* **${amount} chillar**!\n\nTx: \`${txID}\``,
+        `💸 *${ctx.from.first_name}* tipped *${recipientName}* **${formatSikkaDisplay(amountChillar)}**!\n\nTx: \`${txID}\``,
         replyOpts
       );
 
       // Private notification to recipient
       ctx.telegram.sendMessage(
         recipientId,
-        `🎉 You received a tip of *${amount} chillar* from *${ctx.from.first_name}*!\n\nIt's now in your wallet:\n\`${recipientWallet.address}\``,
+        `🎉 You received a tip of *${formatSikkaDisplay(amountChillar)}* from *${ctx.from.first_name}*!\n\nIt's now in your wallet:\n\`${recipientWallet.address}\``,
         { parse_mode: 'Markdown' }
       ).catch(() => {}); // Silently ignore if recipient hasn't started bot in DM
     } catch (err) {
@@ -428,8 +428,8 @@ async function main() {
   });
 
   // /raffle — anyone can start one, but only once every 3 hours.
-  // Admins bypass the cooldown. Minimum entry fee: 100 chillar.
-  const MIN_RAFFLE_FEE = 100n;
+  // Admins bypass the cooldown. Minimum entry fee: 1 SIKKA.
+  const MIN_RAFFLE_FEE = subunitsPerSikka; // 1 SIKKA
 
   bot.command('raffle', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
@@ -454,8 +454,8 @@ async function main() {
         const text =
           `🏆 **Current Raffle** 🏆\n\n` +
           `👥 Players: ${entries.length}\n` +
-          `💰 Pool: ${totalPool} chillar\n` +
-          `🎁 Prize (−5%): ${prize} chillar\n\n` +
+          `💰 Pool: ${formatSikkaDisplay(totalPool)}\n` +
+          `🎁 Prize (−5%): ${formatSikkaDisplay(prize)}\n\n` +
           `⏳ **${timeText}**\n\n` +
           `👉 /join@sikkalabsbot to enter!`;
 
@@ -465,15 +465,17 @@ async function main() {
       }
 
       if (args.length !== 1) {
-        return ctx.reply('Usage: /raffle <entry fee in chillar>\nExample: /raffle 500', replyOpts);
+        return ctx.reply('Usage: /raffle <entry fee in SIKKA>\nExample: /raffle 5', replyOpts);
       }
 
       let entryFee;
-      try { entryFee = BigInt(args[0]); } catch {
-        return ctx.reply('❌ Entry fee must be a whole number of chillar.', replyOpts);
+      const feeFloat = parseFloat(args[0]);
+      if (isNaN(feeFloat) || feeFloat <= 0) {
+        return ctx.reply('❌ Entry fee must be a positive number of SIKKA.', replyOpts);
       }
+      entryFee = BigInt(Math.floor(feeFloat * Number(subunitsPerSikka)));
       if (entryFee < MIN_RAFFLE_FEE) {
-        return ctx.reply(`❌ Minimum entry fee is *${MIN_RAFFLE_FEE} chillar*.`, { parse_mode: 'Markdown', ...replyOpts });
+        return ctx.reply(`❌ Minimum entry fee is *1 SIKKA*.`, { parse_mode: 'Markdown', ...replyOpts });
       }
 
       const active = await getActiveRaffle(db);
@@ -501,7 +503,7 @@ async function main() {
 
       const creatorTag = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
       await ctx.reply(
-        `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${entryFee} chillar*\n\nJoin with /join — waiting for at least 2 players to start the timer!`,
+        `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${formatSikkaDisplay(entryFee)}*\n\nJoin with /join — waiting for at least 2 players to start the timer!`,
         { parse_mode: 'Markdown' }
       );
 
@@ -558,12 +560,12 @@ async function main() {
         // Silently ignored if they haven't started the bot in DM yet.
         ctx.telegram.sendMessage(
           userId,
-          `💳 *You need ${entryFee} chillar to join the raffle.*\n\nYour deposit address:\n\`${uWallet.address}\`\n\nSend funds there and then try /join again!`,
+          `💳 *You need ${formatSikkaDisplay(entryFee)} to join the raffle.*\n\nYour deposit address:\n\`${uWallet.address}\`\n\nSend funds there and then try /join again!`,
           { parse_mode: 'Markdown' }
         ).catch(() => {});
 
         return ctx.reply(
-          `You don't have enough balance. You need *${entryFee} chillar*, but have *${bal} chillar*.\n📩 Check your DMs for your deposit address!`,
+          `You don't have enough balance. You need *${formatSikkaDisplay(entryFee)}*, but have *${formatSikkaDisplay(BigInt(bal))}*.\n📩 Check your DMs for your deposit address!`,
           { parse_mode: 'Markdown', ...replyOpts }
         );
       }
@@ -617,7 +619,7 @@ async function main() {
       
       let msg = "📜 **Last 5 Raffles** 📜\n\n";
       for (const r of recent) {
-        msg += `/raffle_${r.id} - Prize: ${r.prize_amount} chillar\n`;
+        msg += `/raffle_${r.id} - Prize: ${formatSikkaDisplay(BigInt(r.prize_amount || 0))}\n`;
       }
       await ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (err) {
@@ -680,10 +682,10 @@ async function main() {
       
       let msg = `ℹ️ **Raffle #${r.id} Details**\n\n`;
       msg += `Status: ${r.status}\n`;
-      msg += `Entry Fee: ${r.entry_fee} chillar\n`;
+      msg += `Entry Fee: ${formatSikkaDisplay(BigInt(r.entry_fee))}\n`;
       msg += `Participants: ${entries.length}\n`;
       if (r.winner_id) msg += `Winner ID: ${r.winner_id}\n`;
-      if (r.prize_amount) msg += `Prize Won: ${r.prize_amount} chillar\n`;
+      if (r.prize_amount) msg += `Prize Won: ${formatSikkaDisplay(BigInt(r.prize_amount))}\n`;
       
       await ctx.reply(msg, { parse_mode: 'Markdown' });
     } catch (err) {
@@ -736,7 +738,7 @@ async function main() {
           console.error('Could not fetch winner name:', e.message);
         }
 
-        const announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [${winnerName}](tg://user?id=${winnerId})\nPrize: ${prize} chillar!\n\nSending funds...`;
+        const announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [${winnerName}](tg://user?id=${winnerId})\nPrize: ${formatSikkaDisplay(prize)}!\n\nSending funds...`;
         const sentMsg = await bot.telegram.sendMessage(telegramGroup, announceMsg, { parse_mode: 'Markdown' }).catch(console.error);
 
         try {
@@ -797,8 +799,8 @@ async function main() {
       const statusText =
         `🏆 **Current Raffle Info** 🏆\n\n` +
         `👥 Participants: ${entries.length}\n` +
-        `💰 Total Pool: ${totalPool} chillar\n` +
-        `🎁 Prize (Minus 5%): ${prize} chillar\n\n` +
+        `💰 Total Pool: ${formatSikkaDisplay(totalPool)}\n` +
+        `🎁 Prize (Minus 5%): ${formatSikkaDisplay(prize)}\n\n` +
         `⏳ Time Left: **${timeText}**\n\n` +
         `👉 /join@sikkalabsbot to enter!`;
 
