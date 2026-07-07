@@ -221,25 +221,26 @@ async function main() {
     if (String(ctx.chat.id) !== telegramGroup) return;
 
     const userId = ctx.from.id;
+    const replyOpts = { reply_parameters: { message_id: ctx.message.message_id } };
 
     // Fix #1: per-user lock — prevents two concurrent /join messages from the
     // same user both passing hasUserJoinedRaffle before either writes to the DB.
     if (joiningUsers.has(userId)) {
-      return ctx.reply("Please wait, your previous join is still processing.");
+      return ctx.reply("Please wait, your previous join is still processing.", replyOpts);
     }
     joiningUsers.add(userId);
 
     try {
       const active = await getActiveRaffle(db);
-      if (!active) return ctx.reply("No active raffle to join.");
+      if (!active) return ctx.reply("No active raffle to join.", replyOpts);
 
       const hasJoined = await hasUserJoinedRaffle(db, active.id, userId);
-      if (hasJoined) return ctx.reply("You have already joined this raffle!");
+      if (hasJoined) return ctx.reply("You have already joined this raffle!", replyOpts);
 
       // Fix #5: reject if the raffle timer has already expired
       const now = Math.floor(Date.now() / 1000);
       if (active.end_time > 0 && now >= active.end_time) {
-        return ctx.reply("The raffle has just ended — you can no longer join.");
+        return ctx.reply("The raffle has just ended — you can no longer join.", replyOpts);
       }
 
       const entryFee = BigInt(active.entry_fee);
@@ -259,7 +260,7 @@ async function main() {
 
         return ctx.reply(
           `You don't have enough balance. You need *${entryFee} chillar*, but have *${bal} chillar*.\n📩 Check your DMs for your deposit address!`,
-          { parse_mode: 'Markdown' }
+          { parse_mode: 'Markdown', ...replyOpts }
         );
       }
 
@@ -273,7 +274,7 @@ async function main() {
         txID = result.txID;
       } catch (sendErr) {
         await removeRaffleEntry(db, active.id, userId);
-        return ctx.reply(humanizeSendError(sendErr), { parse_mode: 'Markdown' });
+        return ctx.reply(humanizeSendError(sendErr), { parse_mode: 'Markdown', ...replyOpts });
       }
 
       const entries = await getRaffleEntries(db, active.id);
@@ -281,27 +282,28 @@ async function main() {
       const nowAfter = Math.floor(Date.now() / 1000);
 
       if (newCount === 1) {
-        await ctx.reply(`✅ You joined the raffle! Waiting for at least 1 more player to start the timer.\nTx: ` + txID);
+        await ctx.reply(`✅ You joined the raffle! Waiting for at least 1 more player to start the timer.\nTx: ` + txID, replyOpts);
       } else if (newCount === 2) {
         const newEndTime = nowAfter + 120;
         await setRaffleTime(db, active.id, newEndTime);
-        await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown' });
+        await ctx.reply(`✅ You joined the raffle!\n\n⏳ **Timer Started!** 2 minutes remaining!\nTx: ` + txID, { parse_mode: 'Markdown', ...replyOpts });
       } else {
         // Fix #5: only extend if the timer hasn't already expired
         if (active.end_time > 0 && nowAfter < active.end_time) {
           await extendRaffleTime(db, active.id, 120);
-          await ctx.reply(`✅ You joined the raffle! Timer extended by 2 mins.\nTx: ` + txID);
+          await ctx.reply(`✅ You joined the raffle! Timer extended by 2 mins.\nTx: ` + txID, replyOpts);
         } else {
-          await ctx.reply(`✅ You joined the raffle!\nTx: ` + txID);
+          await ctx.reply(`✅ You joined the raffle!\nTx: ` + txID, replyOpts);
         }
       }
     } catch (err) {
       console.error(err);
-      ctx.reply(`Error joining: ${err.message}`);
+      ctx.reply(`Error joining: ${err.message}`, replyOpts);
     } finally {
       joiningUsers.delete(userId); // always release the lock
     }
   });
+
 
   bot.command('prize', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
