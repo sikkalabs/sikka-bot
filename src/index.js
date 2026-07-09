@@ -168,7 +168,8 @@ async function main() {
       `  Send SIKKA to any group member\n\n` +
 
       `<b>──────────────────────────────</b>\n` +
-      `👛 <i>DM @sikkalabsbot for wallet commands</i>`
+      `👛 <i>DM @sikkalabsbot for wallet commands</i>\n\n` +
+      `🌐 <a href="https://sikkalabs.com/">sikkalabs.com</a>`
     );
   }
 
