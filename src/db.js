@@ -23,7 +23,8 @@ export async function initDB(dbPath) {
       status       TEXT    NOT NULL DEFAULT 'active',
       winner_id    TEXT,
       prize_amount TEXT,
-      closed_at    INTEGER
+      closed_at    INTEGER,
+      created_at   INTEGER
     );
     -- getActiveRaffle runs every 5 s — index keeps it O(log n)
     CREATE INDEX IF NOT EXISTS idx_raffles_status ON raffles(status);
@@ -50,6 +51,11 @@ export async function initDB(dbPath) {
   // Migrate existing DBs that predate the closed_at column — safe no-op on fresh DBs
   try {
     await db.exec(`ALTER TABLE raffles ADD COLUMN closed_at INTEGER;`);
+  } catch (_) { /* column already exists — ignore */ }
+
+  // Migrate existing DBs that predate the created_at column — safe no-op on fresh DBs
+  try {
+    await db.exec(`ALTER TABLE raffles ADD COLUMN created_at INTEGER;`);
   } catch (_) { /* column already exists — ignore */ }
 
   return db;
@@ -97,8 +103,8 @@ export async function canStartRaffle(db) {
 
 export async function createRaffle(db, entryFeeChillarStr, endTimeSec) {
   const result = await db.run(
-    `INSERT INTO raffles (entry_fee, end_time, status) VALUES (?, ?, 'active')`,
-    [entryFeeChillarStr, endTimeSec]
+    `INSERT INTO raffles (entry_fee, end_time, status, created_at) VALUES (?, ?, 'active', ?)`,
+    [entryFeeChillarStr, endTimeSec, Math.floor(Date.now() / 1000)]
   );
   return result.lastID;
 }

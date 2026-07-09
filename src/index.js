@@ -500,21 +500,55 @@ async function main() {
         }
       }
 
+      // Auto-join the creator as player 1 — check balance first
+      const creatorId = ctx.from.id;
+      const creatorWallet = await getUserWallet(creatorId);
+      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, creatorId, creatorWallet);
+      const creatorClient = new SikkaClient({ nodeURL: selectedNodeURL, wallet: creatorWallet });
+      const creatorBal = await creatorClient.balance();
+
+      if (BigInt(creatorBal) < entryFee) {
+        // Can't afford their own raffle — abort before creating it
+        ctx.telegram.sendMessage(
+          creatorId,
+          `💳 *You need ${formatSikkaDisplay(entryFee)} to start this raffle (you're auto-joined as player 1).*\n\nYour deposit address:\n\`${creatorWallet.address}\`\n\nTop up and try again!`,
+          { parse_mode: 'Markdown' }
+        ).catch(() => {});
+        return ctx.reply(
+          `❌ You don't have enough balance to start this raffle.\nYou need *${formatSikkaDisplay(entryFee)}* (entry fee for player 1), but have *${formatSikkaDisplay(BigInt(creatorBal))}*.\n📩 Check your DMs for your deposit address!`,
+          { parse_mode: 'Markdown', ...replyOpts }
+        );
+      }
+
       const raffleId = await createRaffle(db, entryFee.toString(), 0);
+
+      // Record creator as player 1 and collect their fee
+      await addRaffleEntry(db, raffleId, creatorId);
+      let creatorTxID;
+      try {
+        const result = await creatorClient.send(entryFee, wallet.address);
+        creatorTxID = result.txID;
+      } catch (sendErr) {
+        await removeRaffleEntry(db, raffleId, creatorId);
+        await cancelRaffle(db, raffleId);
+        return replyThenDelete(ctx, humanizeSendError(sendErr), { parse_mode: 'Markdown', ...replyOpts });
+      }
 
       const creatorTag = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
       await ctx.reply(
-        `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${formatSikkaDisplay(entryFee)}*\n\nJoin with /join — waiting for at least 2 players to start the timer!`,
+        `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${formatSikkaDisplay(entryFee)}*\n\n✅ ${creatorTag} joined as player 1!\nTx: \`${creatorTxID}\`\n\nJoin with /join — waiting for 1 more player to start the timer!`,
         { parse_mode: 'Markdown' }
       );
 
-      // Auto-post live prize info immediately
+      // Auto-post live prize board showing 1 participant already in
+      const initialPool = entryFee;
+      const initialPrize = initialPool - (initialPool * 5n / 100n);
       const prizeText =
         `🏆 **Current Raffle Info** 🏆\n\n` +
-        `👥 Participants: 0\n` +
-        `💰 Total Pool: 0 chillar\n` +
-        `🎁 Prize (Minus 5%): 0 chillar\n\n` +
-        `⏳ Time Left: **Waiting for 2 players to start...**\n\n` +
+        `👥 Participants: 1\n` +
+        `💰 Total Pool: ${formatSikkaDisplay(initialPool)}\n` +
+        `🎁 Prize (Minus 5%): ${formatSikkaDisplay(initialPrize)}\n\n` +
+        `⏳ Time Left: **Waiting for 1 more player to start...**\n\n` +
         `👉 /join@sikkalabsbot to enter!`;
       const prizeMsg = await bot.telegram.sendMessage(telegramGroup, prizeText, { parse_mode: 'Markdown' });
       lastPrizeMsgId = prizeMsg.message_id;
@@ -708,6 +742,47 @@ async function main() {
       if (!active) return;
 
       const now = Math.floor(Date.now() / 1000);
+
+      // Auto-cancel: raffle open ≥15 min but no 2nd player ever joined (end_time stays 0)
+      const NO_PLAYERS_TIMEOUT_SEC = 15 * 60;
+      if (
+        Number(active.end_time) === 0 &&
+        active.created_at &&
+        now - active.created_at >= NO_PLAYERS_TIMEOUT_SEC
+      ) {
+        const entries = await getRaffleEntries(db, active.id);
+        await cancelRaffle(db, active.id);
+
+        if (entries.length === 0) {
+          bot.telegram.sendMessage(
+            telegramGroup,
+            `⏰ Raffle auto-cancelled — nobody joined within 15 minutes.`
+          ).catch(console.error);
+        } else {
+          // 1 player joined but a 2nd never came — refund them
+          bot.telegram.sendMessage(
+            telegramGroup,
+            `⏰ Raffle auto-cancelled — not enough players joined within 15 minutes. Refunding ${entries.length} participant(s)...`
+          ).catch(console.error);
+
+          const entryFee = BigInt(active.entry_fee);
+          for (const participantId of entries) {
+            try {
+              const pWallet = await getUserWallet(participantId);
+              const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
+              await fclient.send(entryFee, pWallet.address);
+            } catch (e) {
+              console.error(`Auto-cancel refund failed for userId=${participantId}:`, e.message);
+              bot.telegram.sendMessage(
+                telegramGroup,
+                `⚠️ Refund failed for one participant — funds remain in faucet wallet.`
+              ).catch(console.error);
+            }
+          }
+        }
+        return;
+      }
+
       if (active.end_time > 0 && now >= active.end_time) {
         const entries = await getRaffleEntries(db, active.id);
         if (entries.length === 0) {
@@ -778,10 +853,13 @@ async function main() {
       if (!lastPrizeMsgId) return; // nobody has typed /prize yet
 
       const now = Math.floor(Date.now() / 1000);
+      const entries = await getRaffleEntries(db, active.id);
+      const entryFee = BigInt(active.entry_fee);
 
       let timeText;
       if (Number(active.end_time) === 0) {
-        timeText = 'Waiting for more players...';
+        const needed = Math.max(1, 2 - entries.length);
+        timeText = needed === 1 ? 'Waiting for 1 more player...' : 'Waiting for players...';
       } else if (now >= active.end_time) {
         return; // resolver will handle this tick
       } else {
@@ -791,8 +869,6 @@ async function main() {
         timeText = `${m}m ${s}s`;
       }
 
-      const entries = await getRaffleEntries(db, active.id);
-      const entryFee = BigInt(active.entry_fee);
       const totalPool = entryFee * BigInt(entries.length);
       const fee = totalPool * 5n / 100n;
       const prize = totalPool - fee;
