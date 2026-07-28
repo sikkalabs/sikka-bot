@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canStartRaffle } from './db.js';
 import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
-import { SikkaClient, createWallet } from 'sikka-sdk';
+import { SikkaClient, createWallet } from './sikka_client.js';
 import { validateAddress, addressRe } from './bech32m.js';
 import path from 'path';
 import crypto from 'crypto';

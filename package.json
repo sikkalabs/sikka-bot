@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "dotenv": "^16.4.7",
-    "sikka-sdk": "github:sikkalabs/sikka-sdk",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "telegraf": "^4.16.3"

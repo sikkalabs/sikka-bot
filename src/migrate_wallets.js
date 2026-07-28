@@ -18,7 +18,7 @@
  */
 
 import crypto from 'crypto';
-import { SikkaClient, createWallet } from 'sikka-sdk';
+import { SikkaClient, createWallet } from './sikka_client.js';
 import { hasUserMigrated, markUserMigrated } from './db.js';
 
 function deriveHex(seed, userId) {
