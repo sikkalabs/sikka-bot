@@ -2,7 +2,6 @@ import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
 import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canStartRaffle } from './db.js';
-import { ensureUserMigrated } from './migrate_wallets.js';
 import { selectBestNodeURL } from './api.js';
 import { SikkaClient, createWallet } from './sikka_client.js';
 import { validateAddress, addressRe } from './bech32m.js';
@@ -71,9 +70,9 @@ function humanizeSendError(err) {
 }
 
 async function getUserWallet(userId) {
-  const walletSeed = process.env.WALLETSEED;
-  if (!walletSeed) throw new Error("WALLETSEED env var is required for user wallet derivation");
-  const derivedHex = crypto.createHash('sha256').update(walletSeed + String(userId)).digest('hex');
+  const privKeyHex = process.env.PRIVATEKEY || process.env.privatekey;
+  if (!privKeyHex) throw new Error("PRIVATEKEY env var is required for user wallet derivation");
+  const derivedHex = crypto.createHash('sha256').update(privKeyHex + String(userId)).digest('hex');
   return await createWallet(derivedHex);
 }
 
@@ -100,13 +99,11 @@ async function main() {
   const privKeyHex = process.env.PRIVATEKEY || process.env.privatekey;
   const telegramToken = process.env.TELEGRAMTOKEN || process.env.telegramtoken;
   const telegramGroup = process.env.TELEGRAMGROUP || process.env.telegramgroup;
-  const walletSeed = process.env.WALLETSEED;
 
   if (!nodeURLsRaw) throw new Error("env var 'SIKKANODE' is required");
   if (!privKeyHex) throw new Error("env var 'PRIVATEKEY' is required");
   if (!telegramToken) throw new Error("env var 'TELEGRAMTOKEN' is required");
   if (!telegramGroup) throw new Error("env var 'TELEGRAMGROUP' is required");
-  if (!walletSeed) throw new Error("env var 'WALLETSEED' is required for user wallet derivation");
   
   const nodeURLs = nodeURLsRaw.split(',').map(s => s.trim()).filter(Boolean);
   const selectedNodeURL = await selectBestNodeURL(nodeURLs);
@@ -196,7 +193,6 @@ async function main() {
       // No address given — use the user's personal wallet
       try {
         const uWallet = await getUserWallet(userId);
-        await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, userId, uWallet);
         recipientAddr = uWallet.address;
       } catch (err) {
         return replyThenDelete(ctx, `❌ Could not resolve your wallet: ${err.message}`, replyOpts);
@@ -260,7 +256,6 @@ async function main() {
     }
     try {
       const uWallet = await getUserWallet(ctx.from.id);
-      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
       await ctx.reply(`Your personal SIKKA deposit address:\n\n\`${uWallet.address}\``, { parse_mode: 'Markdown' });
     } catch (err) {
       await ctx.reply(`Error: ${err.message}`);
@@ -273,7 +268,6 @@ async function main() {
     }
     try {
       const uWallet = await getUserWallet(ctx.from.id);
-      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
       await ctx.reply(`Your balance: *${formatSikkaDisplay(BigInt(bal))}*\n\n[View History](https://1.sikkalabs.com/wallet/${uWallet.address})`, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
@@ -284,7 +278,6 @@ async function main() {
 
   async function handleWithdraw(ctx, amountStr, address) {
     const uWallet = await getUserWallet(ctx.from.id);
-    await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, ctx.from.id, uWallet);
 
     let amountChillar;
     if (amountStr.toLowerCase() === 'all') {
@@ -355,7 +348,6 @@ async function main() {
 
     try {
       const senderWallet = await getUserWallet(senderId);
-      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, senderId, senderWallet);
 
       const senderClient = new SikkaClient({ nodeURL: selectedNodeURL, wallet: senderWallet });
       const bal = await senderClient.balance();
@@ -504,7 +496,6 @@ async function main() {
       // Auto-join the creator as player 1 — check balance first
       const creatorId = ctx.from.id;
       const creatorWallet = await getUserWallet(creatorId);
-      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, creatorId, creatorWallet);
       const creatorClient = new SikkaClient({ nodeURL: selectedNodeURL, wallet: creatorWallet });
       const creatorBal = await creatorClient.balance();
 
@@ -587,7 +578,6 @@ async function main() {
 
       const entryFee = BigInt(active.entry_fee);
       const uWallet = await getUserWallet(userId);
-      await ensureUserMigrated(db, selectedNodeURL, privKeyHex, walletSeed, userId, uWallet);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
 

@@ -41,11 +41,6 @@ export async function initDB(dbPath) {
       telegram_user_id TEXT    PRIMARY KEY,
       created_at       INTEGER NOT NULL
     );
-
-    CREATE TABLE IF NOT EXISTS migrated_users (
-      telegram_user_id TEXT PRIMARY KEY,
-      migrated_at      INTEGER NOT NULL
-    );
   `);
 
   // Migrate existing DBs that predate the closed_at column — safe no-op on fresh DBs
@@ -175,19 +170,3 @@ export async function setRaffleTime(db, raffleId, endTimeSec) {
   );
 }
 
-// ─── Wallet migration helpers ─────────────────────────────────────────────────
-
-export async function hasUserMigrated(db, userId) {
-  const row = await db.get(
-    `SELECT 1 FROM migrated_users WHERE telegram_user_id = ?`,
-    [String(userId)]
-  );
-  return !!row;
-}
-
-export async function markUserMigrated(db, userId) {
-  await db.run(
-    `INSERT OR IGNORE INTO migrated_users (telegram_user_id, migrated_at) VALUES (?, ?)`,
-    [String(userId), Math.floor(Date.now() / 1000)]
-  );
-}
