@@ -47,7 +47,7 @@ function humanizeSendError(err) {
   const msg = err.message || '';
 
   if (/insufficient credits/i.test(msg)) {
-    return `Not enough spam credits (each send costs 1; they regen +1/min, cap 100). Wait a minute and try again.`;
+    return `Not enough transaction credits. Please wait a minute and try again.`;
   }
 
   if (msg.includes('faucet is empty') || msg.includes('balance too low') || /insufficient balance/i.test(msg)) {
@@ -267,7 +267,7 @@ async function main() {
       const bal = asBig(account.balance);
       const credits = account.credits_now ?? account.credits ?? 0;
       await ctx.reply(
-        `Your balance: *${formatSikkaDisplay(bal)}*\nCredits: *${credits}* (1 per send, +1/min, cap 100)\n\nAddress:\n\`${uWallet.address}\`\n\n[Open wallet UI](${selectedNodeURL}/wallet.html)`,
+        `Your balance: *${formatSikkaDisplay(bal)}*\nCredits: *${credits}*\n\nAddress:\n\`${uWallet.address}\`\n\n[Open wallet UI](${selectedNodeURL}/wallet.html)`,
         { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
       );
     } catch (err) {
