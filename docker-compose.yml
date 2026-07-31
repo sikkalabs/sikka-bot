@@ -10,7 +10,7 @@ services:
         condition: any
         window: 1h
     environment:
-      - SIKKANODE=${SIKKANODE}
+      - SIKKANODE=https://1.sikkalabs.com/
       - PRIVATEKEY=${PRIVATEKEY}
       - TELEGRAMTOKEN=${TELEGRAMTOKEN}
       - TELEGRAMGROUP=${TELEGRAMGROUP}
