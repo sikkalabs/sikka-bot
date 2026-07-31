@@ -58,7 +58,7 @@ export async function initDB(dbPath) {
 
 // ─── Claim cooldown ───────────────────────────────────────────────────────────
 
-const CLAIM_COOLDOWN_MS = (parseInt(process.env.COOLDOWN_HOURS) || 3) * 60 * 60 * 1000;
+const CLAIM_COOLDOWN_MS = (parseInt(process.env.COOLDOWN_HOURS) || 5) * 60 * 60 * 1000;
 
 export async function canClaim(db, userId) {
   const row = await db.get(

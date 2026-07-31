@@ -12,9 +12,7 @@ services:
       - PRIVATEKEY=${PRIVATEKEY}
       - TELEGRAMTOKEN=${TELEGRAMTOKEN}
       - TELEGRAMGROUP=${TELEGRAMGROUP}
-      - COOLDOWN_HOURS=${COOLDOWN_HOURS:-3}
-      - AIRDROP_DIVISOR=${AIRDROP_DIVISOR:-2000}
-      - DBPATH=/data/claims.db
+      - AIRDROP_DIVISOR=2000
 
 volumes:
   airdrop-data:

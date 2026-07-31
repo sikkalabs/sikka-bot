@@ -12,7 +12,7 @@ How It Works
 ------------
 - **Group faucet** — paste a `0x…` address or `/claim` / `/claim <0x…>` to
   receive a fraction of the faucet balance (default 1/2000), with a per-user
-  cooldown (default 3 hours).
+  cooldown (default 5 hours).
 - **DM wallet** — `/deposit`, `/balance`, `/send`, `/sendall` on a deterministic
   address derived from `PRIVATEKEY` + Telegram user id.
 - **Tips / raffles** — group commands move funds between those custodial wallets.
@@ -30,7 +30,7 @@ Environment Variables
 | `TELEGRAMTOKEN` | BotFather token. |
 | `TELEGRAMGROUP` | Group chat id (e.g. `-100…`). |
 
-**Optional:** `COOLDOWN_HOURS` (default `3`), `AIRDROP_DIVISOR` (default `2000`),
+**Optional:** `COOLDOWN_HOURS` (default `5`), `AIRDROP_DIVISOR` (default `2000`),
 `DBPATH` (default `./claims.db`).
 
 Run
