@@ -15,9 +15,23 @@ import { validateAddress, addressRe } from './address.js';
 import path from 'path';
 import crypto from 'crypto';
 
-// Helper: send a reply then delete both the trigger and the reply after `delaySec` seconds.
-async function replyThenDelete(ctx, text, opts = {}, delaySec = 30) {
+// Helper: delete a message after delaySec if it's in a group chat (never delete in private DM chats)
+function deleteLater(telegram, chatId, messageId, delaySec = 60) {
+  if (!chatId || !messageId) return;
+  if (typeof chatId === 'number' && chatId > 0) return;
+  if (typeof chatId === 'string' && !chatId.startsWith('-')) return;
+
+  setTimeout(async () => {
+    try { await telegram.deleteMessage(chatId, messageId); } catch (_) {}
+  }, delaySec * 1000);
+}
+
+// Helper: send a reply then delete both the trigger and the reply after `delaySec` seconds in group chats. Never delete in one-on-one (private) chats.
+async function replyThenDelete(ctx, text, opts = {}, delaySec = 60) {
   const reply = await ctx.reply(text, opts);
+  if (ctx.chat?.type === 'private') {
+    return reply;
+  }
   const chatId = ctx.chat.id;
   const triggerMsgId = ctx.message?.message_id;
   setTimeout(async () => {
@@ -168,7 +182,7 @@ async function main() {
     const isPrivate = ctx.chat.type === 'private';
     // In a group, only respond to the configured group
     if (!isPrivate && String(ctx.chat.id) !== telegramGroup) return;
-    ctx.reply(helpText(isPrivate), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    replyThenDelete(ctx, helpText(isPrivate), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
   });
 
 
@@ -233,7 +247,7 @@ async function main() {
         ctx,
         `✅ Sent *${formatSikkaDisplay(sentAmount)}* to \`${recipientAddr}\`\nTx: \`${txID}\``,
         replyOpts,
-        100
+        60
       );
     } catch (err) {
       console.error(`Claim error for userId=${userId}:`, err);
@@ -246,7 +260,7 @@ async function main() {
 
   bot.command('deposit', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot and type /deposit to get your deposit address.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot and type /deposit to get your deposit address.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     try {
       const uWallet = getUserWallet(ctx.from.id);
@@ -258,7 +272,7 @@ async function main() {
 
   bot.command('balance', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot and type /balance to check your balance.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot and type /balance to check your balance.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     try {
       const uWallet = getUserWallet(ctx.from.id);
@@ -316,7 +330,7 @@ async function main() {
 
   bot.command('send', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 2) {
@@ -327,7 +341,7 @@ async function main() {
 
   bot.command('sendall', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 1) {
@@ -343,17 +357,17 @@ async function main() {
     const replyOpts = { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' };
 
     if (senderId === recipientId) {
-      return ctx.reply(`❌ You can't tip yourself!`, replyOpts);
+      return replyThenDelete(ctx, `❌ You can't tip yourself!`, replyOpts);
     }
 
     let amountChillar;
     try {
       amountChillar = parseSikka(amountStr);
     } catch {
-      return ctx.reply(`❌ Invalid amount. Usage: /tip @username 5`, replyOpts);
+      return replyThenDelete(ctx, `❌ Invalid amount. Usage: /tip @username 5`, replyOpts);
     }
     if (amountChillar <= 0n) {
-      return ctx.reply(`❌ Invalid amount. Usage: /tip @username 5`, replyOpts);
+      return replyThenDelete(ctx, `❌ Invalid amount. Usage: /tip @username 5`, replyOpts);
     }
 
     try {
@@ -368,7 +382,8 @@ async function main() {
           `💳 *You tried to tip ${formatSikkaDisplay(amountChillar)} but only have ${formatSikkaDisplay(bal)}.*\n\nYour deposit address:\n\`${senderWallet.address}\``,
           { parse_mode: 'Markdown' }
         ).catch(() => {});
-        return ctx.reply(
+        return replyThenDelete(
+          ctx,
           `❌ Insufficient balance. You have *${formatSikkaDisplay(bal)}* but tried to tip *${formatSikkaDisplay(amountChillar)}*.\n📩 Check your DMs for your deposit address!`,
           replyOpts
         );
@@ -378,7 +393,8 @@ async function main() {
       const { txID } = await senderClient.send(amountChillar, recipientWallet.address);
 
       // Public confirmation in group
-      await ctx.reply(
+      await replyThenDelete(
+        ctx,
         `💸 *${ctx.from.first_name}* tipped *${recipientName}* **${formatSikkaDisplay(amountChillar)}**!\n\nTx: \`${txID}\``,
         replyOpts
       );
@@ -391,7 +407,7 @@ async function main() {
       ).catch(() => {}); // Silently ignore if recipient hasn't started bot in DM
     } catch (err) {
       console.error('Tip error:', err);
-      await ctx.reply(humanizeSendError(err), replyOpts);
+      await replyThenDelete(ctx, humanizeSendError(err), replyOpts);
     }
   }
 
@@ -403,7 +419,7 @@ async function main() {
     const mentionEntity = entities.find(e => e.type === 'mention');
 
     if (!mentionEntity) {
-      return ctx.reply(`❌ Usage: /tip @username 100\nOnly users with a @username can be tipped.`, replyOpts);
+      return replyThenDelete(ctx, `❌ Usage: /tip @username 100\nOnly users with a @username can be tipped.`, replyOpts);
     }
 
     // Extract the @username from the message text
@@ -445,7 +461,7 @@ async function main() {
       // No args → show current raffle status (replaces the old /prize command)
       if (args.length === 0) {
         const active = await getActiveRaffle(db);
-        if (!active) return ctx.reply('No active raffle right now.', replyOpts);
+        if (!active) return replyThenDelete(ctx, 'No active raffle right now.', replyOpts);
 
         const entries = await getRaffleEntries(db, active.id);
         const entryFee = BigInt(active.entry_fee);
@@ -464,30 +480,30 @@ async function main() {
           `⏳ **${timeText}**\n\n` +
           `👉 /join@sikkalabsbot to enter!`;
 
-        const sent = await ctx.reply(text, { parse_mode: 'Markdown' });
+        const sent = await replyThenDelete(ctx, text, { parse_mode: 'Markdown' });
         lastPrizeMsgId = sent.message_id;
         return;
       }
 
       if (args.length !== 1) {
-        return ctx.reply('Usage: /raffle <entry fee in SIKKA>\nExample: /raffle 5', replyOpts);
+        return replyThenDelete(ctx, 'Usage: /raffle <entry fee in SIKKA>\nExample: /raffle 5', replyOpts);
       }
 
       let entryFee;
       try {
         entryFee = parseSikka(args[0]);
       } catch {
-        return ctx.reply('❌ Entry fee must be a positive number of SIKKA.', replyOpts);
+        return replyThenDelete(ctx, '❌ Entry fee must be a positive number of SIKKA.', replyOpts);
       }
       if (entryFee <= 0n) {
-        return ctx.reply('❌ Entry fee must be a positive number of SIKKA.', replyOpts);
+        return replyThenDelete(ctx, '❌ Entry fee must be a positive number of SIKKA.', replyOpts);
       }
       if (entryFee < MIN_RAFFLE_FEE) {
-        return ctx.reply(`❌ Minimum entry fee is *1 SIKKA*.`, { parse_mode: 'Markdown', ...replyOpts });
+        return replyThenDelete(ctx, `❌ Minimum entry fee is *1 SIKKA*.`, { parse_mode: 'Markdown', ...replyOpts });
       }
 
       const active = await getActiveRaffle(db);
-      if (active) return ctx.reply('⚠️ A raffle is already active! Wait for it to finish.', replyOpts);
+      if (active) return replyThenDelete(ctx, '⚠️ A raffle is already active! Wait for it to finish.', replyOpts);
 
       // Check if user is admin — admins skip the cooldown
       const chatAdmins = await ctx.getChatAdministrators();
@@ -519,7 +535,8 @@ async function main() {
           `💳 *You need ${formatSikkaDisplay(entryFee)} to start this raffle (you're auto-joined as player 1).*\n\nYour deposit address:\n\`${creatorWallet.address}\`\n\nTop up and try again!`,
           { parse_mode: 'Markdown' }
         ).catch(() => {});
-        return ctx.reply(
+        return replyThenDelete(
+          ctx,
           `❌ You don't have enough balance to start this raffle.\nYou need *${formatSikkaDisplay(entryFee)}* (entry fee for player 1), but have *${formatSikkaDisplay(creatorBal)}*.\n📩 Check your DMs for your deposit address!`,
           { parse_mode: 'Markdown', ...replyOpts }
         );
@@ -540,7 +557,8 @@ async function main() {
       }
 
       const creatorTag = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-      await ctx.reply(
+      await replyThenDelete(
+        ctx,
         `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${formatSikkaDisplay(entryFee)}*\n\n✅ ${creatorTag} joined as player 1!\nTx: \`${creatorTxID}\`\n\nJoin with /join — waiting for 1 more player to start the timer!`,
         { parse_mode: 'Markdown' }
       );
@@ -557,9 +575,10 @@ async function main() {
         `👉 /join@sikkalabsbot to enter!`;
       const prizeMsg = await bot.telegram.sendMessage(telegramGroup, prizeText, { parse_mode: 'Markdown' });
       lastPrizeMsgId = prizeMsg.message_id;
+      deleteLater(bot.telegram, telegramGroup, prizeMsg.message_id, 60);
     } catch (err) {
       console.error(err);
-      ctx.reply(`Error: ${err.message}`, replyOpts);
+      replyThenDelete(ctx, `Error: ${err.message}`, replyOpts);
     }
   });
 
@@ -572,21 +591,21 @@ async function main() {
     // Fix #1: per-user lock — prevents two concurrent /join messages from the
     // same user both passing hasUserJoinedRaffle before either writes to the DB.
     if (joiningUsers.has(userId)) {
-      return ctx.reply("Please wait, your previous join is still processing.", replyOpts);
+      return replyThenDelete(ctx, "Please wait, your previous join is still processing.", replyOpts);
     }
     joiningUsers.add(userId);
 
     try {
       const active = await getActiveRaffle(db);
-      if (!active) return ctx.reply("No active raffle to join.", replyOpts);
+      if (!active) return replyThenDelete(ctx, "No active raffle to join.", replyOpts);
 
       const hasJoined = await hasUserJoinedRaffle(db, active.id, userId);
-      if (hasJoined) return ctx.reply("You have already joined this raffle!", replyOpts);
+      if (hasJoined) return replyThenDelete(ctx, "You have already joined this raffle!", replyOpts);
 
       // Fix #5: reject if the raffle timer has already expired
       const now = Math.floor(Date.now() / 1000);
       if (active.end_time > 0 && now >= active.end_time) {
-        return ctx.reply("The raffle has just ended — you can no longer join.", replyOpts);
+        return replyThenDelete(ctx, "The raffle has just ended — you can no longer join.", replyOpts);
       }
 
       const entryFee = BigInt(active.entry_fee);
@@ -603,7 +622,8 @@ async function main() {
           { parse_mode: 'Markdown' }
         ).catch(() => {});
 
-        return ctx.reply(
+        return replyThenDelete(
+          ctx,
           `You don't have enough balance. You need *${formatSikkaDisplay(entryFee)}*, but have *${formatSikkaDisplay(bal)}*.\n📩 Check your DMs for your deposit address!`,
           { parse_mode: 'Markdown', ...replyOpts }
         );
@@ -628,7 +648,7 @@ async function main() {
 
       if (newCount === 1) {
         // Still waiting for a second player — no timer yet
-        await replyThenDelete(ctx, `✅ You joined the raffle!\nWaiting for 1 more player to start the timer.\nTx: ${txID}`, replyOpts, 100);
+        await replyThenDelete(ctx, `✅ You joined the raffle!\nWaiting for 1 more player to start the timer.\nTx: ${txID}`, replyOpts, 60);
       } else {
         // 2nd player or beyond — always reset clock to exactly 2 mins from now
         const newEndTime = nowAfter + 120;
@@ -638,11 +658,11 @@ async function main() {
           ? `✅ You joined the raffle!\n\n⏳ Timer started — 2 minutes remaining!\nTx: ${txID}`
           : `✅ You joined the raffle!\n\n⏳ Timer reset — 2 minutes remaining!\nTx: ${txID}`;
 
-        await replyThenDelete(ctx, msg, { parse_mode: 'Markdown', ...replyOpts }, 100);
+        await replyThenDelete(ctx, msg, { parse_mode: 'Markdown', ...replyOpts }, 60);
       }
     } catch (err) {
       console.error(err);
-      ctx.reply(`Error joining: ${err.message}`, replyOpts);
+      replyThenDelete(ctx, `Error joining: ${err.message}`, replyOpts);
     } finally {
       joiningUsers.delete(userId); // always release the lock
     }
@@ -654,16 +674,16 @@ async function main() {
     if (String(ctx.chat.id) !== telegramGroup) return;
     try {
       const recent = await getRecentRaffles(db, 5);
-      if (recent.length === 0) return ctx.reply("No past raffles found.");
+      if (recent.length === 0) return replyThenDelete(ctx, "No past raffles found.");
       
       let msg = "📜 **Last 5 Raffles** 📜\n\n";
       for (const r of recent) {
         msg += `/raffle_${r.id} - Prize: ${formatSikkaDisplay(BigInt(r.prize_amount || 0))}\n`;
       }
-      await ctx.reply(msg, { parse_mode: 'Markdown' });
+      await replyThenDelete(ctx, msg, { parse_mode: 'Markdown' });
     } catch (err) {
       console.error(err);
-      ctx.reply(`Error: ${err.message}`);
+      replyThenDelete(ctx, `Error: ${err.message}`);
     }
   });
 
@@ -673,16 +693,16 @@ async function main() {
     try {
       const chatAdmins = await ctx.getChatAdministrators();
       const isAdmin = chatAdmins.some(admin => admin.user.id === ctx.from.id);
-      if (!isAdmin) return ctx.reply("Only admins can cancel a raffle.");
+      if (!isAdmin) return replyThenDelete(ctx, "Only admins can cancel a raffle.");
 
       const active = await getActiveRaffle(db);
-      if (!active) return ctx.reply("No active raffle to cancel.");
+      if (!active) return replyThenDelete(ctx, "No active raffle to cancel.");
 
       const entries = await getRaffleEntries(db, active.id);
       const entryFee = BigInt(active.entry_fee);
 
       await cancelRaffle(db, active.id);
-      await ctx.reply(`🚫 Raffle cancelled. Refunding ${entries.length} participant(s)...`);
+      await replyThenDelete(ctx, `🚫 Raffle cancelled. Refunding ${entries.length} participant(s)...`);
 
       // Refund each participant from the faucet wallet
       let refunded = 0;
@@ -699,13 +719,14 @@ async function main() {
         }
       }
 
-      await ctx.reply(
+      await replyThenDelete(
+        ctx,
         `✅ Refund complete.\n\nRefunded: ${refunded}\nFailed: ${failed}` +
         (failed > 0 ? `\n\n⚠️ ${failed} refund(s) failed — funds remain in faucet wallet.` : ``)
       );
     } catch (err) {
       console.error(err);
-      ctx.reply(`Error: ${err.message}`);
+      replyThenDelete(ctx, `Error: ${err.message}`);
     }
   });
 
@@ -715,7 +736,7 @@ async function main() {
     try {
       const rId = parseInt(ctx.match[1]);
       const r = await getRaffleById(db, rId);
-      if (!r) return ctx.reply("Raffle not found.");
+      if (!r) return replyThenDelete(ctx, "Raffle not found.");
       
       const entries = await getRaffleEntries(db, r.id);
       
@@ -726,10 +747,10 @@ async function main() {
       if (r.winner_id) msg += `Winner ID: ${r.winner_id}\n`;
       if (r.prize_amount) msg += `Prize Won: ${formatSikkaDisplay(BigInt(r.prize_amount))}\n`;
       
-      await ctx.reply(msg, { parse_mode: 'Markdown' });
+      await replyThenDelete(ctx, msg, { parse_mode: 'Markdown' });
     } catch (err) {
       console.error(err);
-      ctx.reply(`Error: ${err.message}`);
+      replyThenDelete(ctx, `Error: ${err.message}`);
     }
   });
 
@@ -820,6 +841,7 @@ async function main() {
 
         const announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [${winnerName}](tg://user?id=${winnerId})\nPrize: ${formatSikkaDisplay(prize)}!\n\nSending funds...`;
         const sentMsg = await bot.telegram.sendMessage(telegramGroup, announceMsg, { parse_mode: 'Markdown' }).catch(console.error);
+        if (sentMsg) deleteLater(bot.telegram, telegramGroup, sentMsg.message_id, 60);
 
         try {
           const winnerWallet = getUserWallet(winnerId);
@@ -827,10 +849,10 @@ async function main() {
           const { txID } = await fclient.send(prize, winnerWallet.address);
           // Fix #7: guard against sentMsg being undefined if the announce message failed
           const replyParams = sentMsg ? { reply_parameters: { message_id: sentMsg.message_id } } : {};
-          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\n\n🤫 Winner — DM @sikkalabsbot and type /balance to check your funds privately!`, { parse_mode: 'Markdown', ...replyParams }).catch(console.error);
+          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\n\n🤫 Winner — DM @sikkalabsbot and type /balance to check your funds privately!`, { parse_mode: 'Markdown', ...replyParams }).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, 60)).catch(console.error);
         } catch (e) {
           console.error("Failed to send prize:", e);
-          bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).catch(console.error);
+          bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, 60)).catch(console.error);
         }
       }
     } catch (e) {
@@ -969,7 +991,8 @@ async function main() {
       if (!claimStatus.ok) {
         const remainingHours = Math.floor(claimStatus.remaining / (60 * 60 * 1000));
         const remainingMins = Math.floor((claimStatus.remaining % (60 * 60 * 1000)) / (60 * 1000));
-        await ctx.reply(
+        await replyThenDelete(
+          ctx,
           `You already claimed recently. Try again in *${remainingHours}h ${remainingMins}m*.`,
           { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' }
         );
@@ -992,7 +1015,8 @@ async function main() {
         await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '🎉' }]);
       } catch (e) {}
       
-      await ctx.reply(
+      await replyThenDelete(
+        ctx,
         `Sent *${formatSikkaDisplay(sentAmount)}* to \`${recipientAddr}\`\nTx: \`${txID}\``,
         { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' }
       );
