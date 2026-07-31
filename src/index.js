@@ -3,8 +3,15 @@ import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
 import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canStartRaffle } from './db.js';
 import { selectBestNodeURL } from './api.js';
-import { SikkaClient, createWallet } from './sikka_client.js';
-import { validateAddress, addressRe } from './bech32m.js';
+import {
+  SikkaClient,
+  createWallet,
+  formatSikka as formatSikkaAmount,
+  parseSikka,
+  CHILLAR_PER_SIKKA,
+  asBig,
+} from './sikka_client.js';
+import { validateAddress, addressRe } from './address.js';
 import path from 'path';
 import crypto from 'crypto';
 
@@ -24,56 +31,43 @@ async function replyThenDelete(ctx, text, opts = {}, delaySec = 30) {
 
 dotenv.config();
 
-const subunitsPerSikka = 10_000_000_000n;
+const subunitsPerSikka = CHILLAR_PER_SIKKA; // 1 SIKKA = 10⁹ CHILLAR
 const airdropDivisor = BigInt(process.env.AIRDROP_DIVISOR || "2000");
 
-function formatSikka(chillar) {
-  let whole = chillar / subunitsPerSikka;
-  let frac = chillar % subunitsPerSikka;
-  if (frac < 0n) frac = -frac;
-  return `${whole}.${frac.toString().padStart(10, '0')}`;
-}
-
 function formatSikkaDisplay(chillar) {
-  let abs = chillar < 0n ? -chillar : chillar;
-  if (abs < subunitsPerSikka) {
-    return `${chillar} chillar`;
+  const c = asBig(chillar);
+  const abs = c < 0n ? -c : c;
+  if (abs > 0n && abs < subunitsPerSikka) {
+    return `${c} chillar`;
   }
-  return `${formatSikka(chillar)} SIKKA`;
+  return `${formatSikkaAmount(c)} SIKKA`;
 }
 
-// Translates raw node/SDK errors into friendly human-readable messages.
 function humanizeSendError(err) {
   const msg = err.message || '';
 
-  if (msg.includes('utxo_not_mature')) {
-    // Extract timestamps to compute the exact remaining wait time
-    const maturesMatch = msg.match(/matures at (\d+)/);
-    const spendingMatch = msg.match(/spending tx timestamp (\d+)/);
-    if (maturesMatch && spendingMatch) {
-      const remainingSecs = Math.max(0, parseInt(maturesMatch[1]) - parseInt(spendingMatch[1]));
-      const m = Math.floor(remainingSecs / 60);
-      const s = remainingSecs % 60;
-      const timeStr = m > 0 ? `${m}m ${s}s` : `${s}s`;
-      return `Your coins just arrived and need a short settling period before they can be spent. Please wait about *${timeStr}* and try again.`;
-    }
-    return `Your coins just arrived and need a short settling period before they can be spent. Please wait a few minutes and try again.`;
+  if (/insufficient credits/i.test(msg)) {
+    return `Not enough spam credits (each send costs 1; they regen +1/min, cap 100). Wait a minute and try again.`;
   }
 
-  if (msg.includes('faucet is empty') || msg.includes('balance too low')) {
-    return `The faucet is currently empty. Please try again later.`;
+  if (msg.includes('faucet is empty') || msg.includes('balance too low') || /insufficient balance/i.test(msg)) {
+    return `Insufficient balance for this send. Top up or try a smaller amount.`;
   }
 
-  // Fallback: strip raw JSON blobs from the message for cleaner display
+  if (/bad nonce|nonce/i.test(msg)) {
+    return `Nonce conflict — another send may still be pending. Wait a moment and retry.`;
+  }
+
   const clean = msg.replace(/:\s*\{.*\}/s, '').trim();
   return `Something went wrong: ${clean}`;
 }
 
-async function getUserWallet(userId) {
+function getUserWallet(userId) {
   const privKeyHex = process.env.PRIVATEKEY || process.env.privatekey;
   if (!privKeyHex) throw new Error("PRIVATEKEY env var is required for user wallet derivation");
+  // Deterministic 32-byte seed per Telegram user (custodial).
   const derivedHex = crypto.createHash('sha256').update(privKeyHex + String(userId)).digest('hex');
-  return await createWallet(derivedHex);
+  return createWallet(derivedHex);
 }
 
 async function sendAirdrop(nodeURL, wallet, recipientAddr) {
@@ -109,7 +103,7 @@ async function main() {
   const selectedNodeURL = await selectBestNodeURL(nodeURLs);
   console.log(`Using Sikka node: ${selectedNodeURL}`);
   
-  const wallet = await createWallet(privKeyHex);
+  const wallet = createWallet(privKeyHex);
   console.log(`Faucet address: ${wallet.address}`);
   
   const dbPath = process.env.DBPATH || path.join(process.cwd(), 'claims.db');
@@ -135,9 +129,9 @@ async function main() {
         `  Check your current balance\n\n` +
 
         `<b>┌─ 📤 Send ────────────────────┐</b>\n` +
-        `  <code>/send &lt;amount&gt; &lt;address&gt;</code>\n` +
-        `  <code>/send all &lt;address&gt;</code>\n` +
-        `  <code>/sendall &lt;address&gt;</code>\n\n` +
+        `  <code>/send &lt;amount&gt; &lt;0x…&gt;</code>\n` +
+        `  <code>/send all &lt;0x…&gt;</code>\n` +
+        `  <code>/sendall &lt;0x…&gt;</code>\n\n` +
 
         `<b>──────────────────────────────</b>\n` +
         `🎰 <i>Head to the group for faucet, raffle &amp; tips</i>`
@@ -150,7 +144,7 @@ async function main() {
 
       `<b>┌─ 💧 Faucet ──────────────────┐</b>\n` +
       `  <code>/claim</code> — Free SIKKA to your wallet\n` +
-      `  <code>/claim &lt;address&gt;</code> — Free SIKKA to any address\n\n` +
+      `  <code>/claim &lt;0x…&gt;</code> — Free SIKKA to any address\n\n` +
 
       `<b>┌─ 🎰 Raffle ──────────────────┐</b>\n` +
       `  <code>/raffle</code> — Live pot &amp; countdown\n` +
@@ -192,7 +186,7 @@ async function main() {
     if (args.length === 0) {
       // No address given — use the user's personal wallet
       try {
-        const uWallet = await getUserWallet(userId);
+        const uWallet = getUserWallet(userId);
         recipientAddr = uWallet.address;
       } catch (err) {
         return replyThenDelete(ctx, `❌ Could not resolve your wallet: ${err.message}`, replyOpts);
@@ -202,7 +196,7 @@ async function main() {
       try {
         recipientAddr = validateAddress(args[0]);
       } catch (_) {
-        return replyThenDelete(ctx, `❌ Invalid address. Usage: /claim or /claim <address>`, replyOpts);
+        return replyThenDelete(ctx, `❌ Invalid address. Usage: /claim or /claim <0x…>`, replyOpts);
       }
     }
 
@@ -255,7 +249,7 @@ async function main() {
       return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot and type /deposit to get your deposit address.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     try {
-      const uWallet = await getUserWallet(ctx.from.id);
+      const uWallet = getUserWallet(ctx.from.id);
       await ctx.reply(`Your personal SIKKA deposit address:\n\n\`${uWallet.address}\``, { parse_mode: 'Markdown' });
     } catch (err) {
       await ctx.reply(`Error: ${err.message}`);
@@ -267,38 +261,50 @@ async function main() {
       return ctx.reply(`🔒 Wallet commands are private! DM @sikkalabsbot and type /balance to check your balance.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     try {
-      const uWallet = await getUserWallet(ctx.from.id);
+      const uWallet = getUserWallet(ctx.from.id);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
-      const bal = await client.balance();
-      await ctx.reply(`Your balance: *${formatSikkaDisplay(BigInt(bal))}*\n\n[View History](https://1.sikkalabs.com/wallet/${uWallet.address})`, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+      const account = await client.account();
+      const bal = asBig(account.balance);
+      const credits = account.credits_now ?? account.credits ?? 0;
+      await ctx.reply(
+        `Your balance: *${formatSikkaDisplay(bal)}*\nCredits: *${credits}* (1 per send, +1/min, cap 100)\n\nAddress:\n\`${uWallet.address}\`\n\n[Open wallet UI](${selectedNodeURL}/wallet.html)`,
+        { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
+      );
     } catch (err) {
       await ctx.reply(`Error: ${err.message}`);
     }
   });
 
-  async function handleWithdraw(ctx, amountStr, address) {
-    const uWallet = await getUserWallet(ctx.from.id);
+  async function handleWithdraw(ctx, amountStr, addressRaw) {
+    const uWallet = getUserWallet(ctx.from.id);
+    let address;
+    try {
+      address = validateAddress(addressRaw);
+    } catch {
+      return ctx.reply('Invalid address. Expected `0x` + 64 hex characters.', { parse_mode: 'Markdown' });
+    }
 
     let amountChillar;
     if (amountStr.toLowerCase() === 'all') {
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
-      const bal = await client.balance();
-      amountChillar = BigInt(bal);
+      amountChillar = await client.balance();
     } else {
-      const floatAmt = parseFloat(amountStr);
-      if (isNaN(floatAmt) || floatAmt <= 0) return ctx.reply("Invalid amount");
-      amountChillar = BigInt(Math.floor(floatAmt * Number(subunitsPerSikka)));
+      try {
+        amountChillar = parseSikka(amountStr);
+      } catch {
+        return ctx.reply('Invalid amount');
+      }
     }
 
     if (amountChillar === 0n) {
-      return ctx.reply("Cannot withdraw 0.");
+      return ctx.reply('Cannot withdraw 0.');
     }
 
     try {
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
-      if (BigInt(bal) < amountChillar) {
-        return ctx.reply(`Insufficient balance. You have ${formatSikkaDisplay(BigInt(bal))}`);
+      if (bal < amountChillar) {
+        return ctx.reply(`Insufficient balance. You have ${formatSikkaDisplay(bal)}`);
       }
 
       const { txID } = await client.send(amountChillar, address);
@@ -314,7 +320,7 @@ async function main() {
     }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 2) {
-      return ctx.reply("Usage: /send <amount> <address>\nExample: /send 5 sikka1...\n(You can also use 'all' as the amount to withdraw your entire balance: /send all sikka1...)");
+      return ctx.reply('Usage: /send <amount> <0x…>\nExample: /send 5 0xabc…\n(You can also use /send all <0x…>)');
     }
     await handleWithdraw(ctx, args[0], args[1]);
   });
@@ -325,7 +331,7 @@ async function main() {
     }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 1) {
-      return ctx.reply("Usage: /sendall <address>\nExample: /sendall sikka1...");
+      return ctx.reply('Usage: /sendall <0x…>');
     }
     await handleWithdraw(ctx, 'all', args[0]);
   });
@@ -340,31 +346,35 @@ async function main() {
       return ctx.reply(`❌ You can't tip yourself!`, replyOpts);
     }
 
-    const floatAmt = parseFloat(amountStr);
-    if (isNaN(floatAmt) || floatAmt <= 0) {
+    let amountChillar;
+    try {
+      amountChillar = parseSikka(amountStr);
+    } catch {
       return ctx.reply(`❌ Invalid amount. Usage: /tip @username 5`, replyOpts);
     }
-    const amountChillar = BigInt(Math.floor(floatAmt * Number(subunitsPerSikka)));
+    if (amountChillar <= 0n) {
+      return ctx.reply(`❌ Invalid amount. Usage: /tip @username 5`, replyOpts);
+    }
 
     try {
-      const senderWallet = await getUserWallet(senderId);
+      const senderWallet = getUserWallet(senderId);
 
       const senderClient = new SikkaClient({ nodeURL: selectedNodeURL, wallet: senderWallet });
       const bal = await senderClient.balance();
 
-      if (BigInt(bal) < amountChillar) {
+      if (bal < amountChillar) {
         ctx.telegram.sendMessage(
           senderId,
-          `💳 *You tried to tip ${formatSikkaDisplay(amountChillar)} but only have ${formatSikkaDisplay(BigInt(bal))}.*\n\nYour deposit address:\n\`${senderWallet.address}\``,
+          `💳 *You tried to tip ${formatSikkaDisplay(amountChillar)} but only have ${formatSikkaDisplay(bal)}.*\n\nYour deposit address:\n\`${senderWallet.address}\``,
           { parse_mode: 'Markdown' }
         ).catch(() => {});
         return ctx.reply(
-          `❌ Insufficient balance. You have *${formatSikkaDisplay(BigInt(bal))}* but tried to tip *${formatSikkaDisplay(amountChillar)}*.\n📩 Check your DMs for your deposit address!`,
+          `❌ Insufficient balance. You have *${formatSikkaDisplay(bal)}* but tried to tip *${formatSikkaDisplay(amountChillar)}*.\n📩 Check your DMs for your deposit address!`,
           replyOpts
         );
       }
 
-      const recipientWallet = await getUserWallet(recipientId);
+      const recipientWallet = getUserWallet(recipientId);
       const { txID } = await senderClient.send(amountChillar, recipientWallet.address);
 
       // Public confirmation in group
@@ -464,11 +474,14 @@ async function main() {
       }
 
       let entryFee;
-      const feeFloat = parseFloat(args[0]);
-      if (isNaN(feeFloat) || feeFloat <= 0) {
+      try {
+        entryFee = parseSikka(args[0]);
+      } catch {
         return ctx.reply('❌ Entry fee must be a positive number of SIKKA.', replyOpts);
       }
-      entryFee = BigInt(Math.floor(feeFloat * Number(subunitsPerSikka)));
+      if (entryFee <= 0n) {
+        return ctx.reply('❌ Entry fee must be a positive number of SIKKA.', replyOpts);
+      }
       if (entryFee < MIN_RAFFLE_FEE) {
         return ctx.reply(`❌ Minimum entry fee is *1 SIKKA*.`, { parse_mode: 'Markdown', ...replyOpts });
       }
@@ -495,11 +508,11 @@ async function main() {
 
       // Auto-join the creator as player 1 — check balance first
       const creatorId = ctx.from.id;
-      const creatorWallet = await getUserWallet(creatorId);
+      const creatorWallet = getUserWallet(creatorId);
       const creatorClient = new SikkaClient({ nodeURL: selectedNodeURL, wallet: creatorWallet });
       const creatorBal = await creatorClient.balance();
 
-      if (BigInt(creatorBal) < entryFee) {
+      if (creatorBal < entryFee) {
         // Can't afford their own raffle — abort before creating it
         ctx.telegram.sendMessage(
           creatorId,
@@ -507,7 +520,7 @@ async function main() {
           { parse_mode: 'Markdown' }
         ).catch(() => {});
         return ctx.reply(
-          `❌ You don't have enough balance to start this raffle.\nYou need *${formatSikkaDisplay(entryFee)}* (entry fee for player 1), but have *${formatSikkaDisplay(BigInt(creatorBal))}*.\n📩 Check your DMs for your deposit address!`,
+          `❌ You don't have enough balance to start this raffle.\nYou need *${formatSikkaDisplay(entryFee)}* (entry fee for player 1), but have *${formatSikkaDisplay(creatorBal)}*.\n📩 Check your DMs for your deposit address!`,
           { parse_mode: 'Markdown', ...replyOpts }
         );
       }
@@ -577,11 +590,11 @@ async function main() {
       }
 
       const entryFee = BigInt(active.entry_fee);
-      const uWallet = await getUserWallet(userId);
+      const uWallet = getUserWallet(userId);
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const bal = await client.balance();
 
-      if (BigInt(bal) < entryFee) {
+      if (bal < entryFee) {
         // Try to DM them the deposit address so they can top up privately.
         // Silently ignored if they haven't started the bot in DM yet.
         ctx.telegram.sendMessage(
@@ -591,7 +604,7 @@ async function main() {
         ).catch(() => {});
 
         return ctx.reply(
-          `You don't have enough balance. You need *${formatSikkaDisplay(entryFee)}*, but have *${formatSikkaDisplay(BigInt(bal))}*.\n📩 Check your DMs for your deposit address!`,
+          `You don't have enough balance. You need *${formatSikkaDisplay(entryFee)}*, but have *${formatSikkaDisplay(bal)}*.\n📩 Check your DMs for your deposit address!`,
           { parse_mode: 'Markdown', ...replyOpts }
         );
       }
@@ -676,7 +689,7 @@ async function main() {
       let failed = 0;
       for (const participantId of entries) {
         try {
-          const pWallet = await getUserWallet(participantId);
+          const pWallet = getUserWallet(participantId);
           const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
           await fclient.send(entryFee, pWallet.address);
           refunded++;
@@ -759,7 +772,7 @@ async function main() {
           const entryFee = BigInt(active.entry_fee);
           for (const participantId of entries) {
             try {
-              const pWallet = await getUserWallet(participantId);
+              const pWallet = getUserWallet(participantId);
               const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
               await fclient.send(entryFee, pWallet.address);
             } catch (e) {
@@ -809,7 +822,7 @@ async function main() {
         const sentMsg = await bot.telegram.sendMessage(telegramGroup, announceMsg, { parse_mode: 'Markdown' }).catch(console.error);
 
         try {
-          const winnerWallet = await getUserWallet(winnerId);
+          const winnerWallet = getUserWallet(winnerId);
           const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
           const { txID } = await fclient.send(prize, winnerWallet.address);
           // Fix #7: guard against sentMsg being undefined if the announce message failed

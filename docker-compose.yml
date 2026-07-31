@@ -5,12 +5,16 @@ services:
       dockerfile: Dockerfile
     container_name: airdrop
     restart: unless-stopped
-    deploy:
-      restart_policy:
-        condition: any
-        window: 1h
+    volumes:
+      - airdrop-data:/data
     environment:
-      - SIKKANODE=https://1.sikkalabs.com/
+      - SIKKANODE=${SIKKANODE:-https://1.sikkalabs.com}
       - PRIVATEKEY=${PRIVATEKEY}
       - TELEGRAMTOKEN=${TELEGRAMTOKEN}
       - TELEGRAMGROUP=${TELEGRAMGROUP}
+      - COOLDOWN_HOURS=${COOLDOWN_HOURS:-3}
+      - AIRDROP_DIVISOR=${AIRDROP_DIVISOR:-2000}
+      - DBPATH=/data/claims.db
+
+volumes:
+  airdrop-data:

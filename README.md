@@ -1,49 +1,49 @@
-Sikka Airdrop Bot - Node.js Edition
-===================================
+SIKKA Telegram Bot
+==================
 
-A Telegram bot that automatically sends Sikka cryptocurrency airdrops to users
-who post a valid sikka1... address in the configured Telegram group.
+Custodial faucet, wallets, tips, and raffles for the current SIKKA chain
+(account model, `0x` addresses, ML-DSA-87, JSON-RPC).
 
-This bot uses the [Sikka Node.js SDK](https://github.com/sikkalabs/sikka-sdk) to create transactions, mine Proof-of-Work, and broadcast them to the network.
-
-    docker compose down && docker compose --env-file .env up -d --build
-
+Matches the protocol documented in the main repo:
+[docs/wallets.md](https://github.com/sikkalabs/sikka/blob/main/docs/wallets.md)
+and the reference wallet at `/wallet.html`.
 
 How It Works
 ------------
-When a user posts a message containing a valid Sikka address in the configured
-Telegram group, the bot:
+- **Group faucet** — paste a `0x…` address or `/claim` / `/claim <0x…>` to
+  receive a fraction of the faucet balance (default 1/2000), with a per-user
+  cooldown (default 3 hours).
+- **DM wallet** — `/deposit`, `/balance`, `/send`, `/sendall` on a deterministic
+  address derived from `PRIVATEKEY` + Telegram user id.
+- **Tips / raffles** — group commands move funds between those custodial wallets.
 
-1. Validates the address (bech32m, correct HRP and version).
-2. Checks a per-user cooldown (default 3 hours) in the SQLite database.
-3. Sends a configurable percentage (default 0.05%) of the faucet wallet's current balance to the recipient.
-4. Replies to the message with the transaction ID.
+Each on-chain send burns **1 spam credit** (+1/min, cap 100).
 
 Environment Variables
 ---------------------
 **Required:**
-sikkanode      - Sikka node URL, or a comma-separated list of node URLs.
-                 The bot probes /v1/status and picks the valid node with the
-                 highest reported DAG size.
-privatekey     - Hex-encoded ML-DSA-87 private key (32-byte seed) used to
-                 sign transactions from the faucet wallet.
-telegramtoken  - Telegram bot token (from @BotFather).
-telegramgroup  - Telegram Group ID to restrict the bot to (e.g. -5450027651).
 
-**Optional:**
-COOLDOWN_HOURS - Cooldown time in hours before a user can claim again (default: 3).
-AIRDROP_DIVISOR- The fraction of the faucet's balance to send. For example, 2000 means 1/2000th or 0.05% (default: 2000).
+| Var | Meaning |
+| --- | --- |
+| `SIKKANODE` | Node URL(s), comma-separated. Bot picks the highest `/api/health` height. |
+| `PRIVATEKEY` | Faucet key: 32-byte seed hex **or** full 4896-byte ML-DSA-87 private key hex. Also roots all user wallets. |
+| `TELEGRAMTOKEN` | BotFather token. |
+| `TELEGRAMGROUP` | Group chat id (e.g. `-100…`). |
 
-Powered by Sikka SDK
---------------------
-All cryptographic operations (ML-DSA-87 signing, payload hashing) and node communication are handled by [sikka-sdk](https://github.com/sikkalabs/sikka-sdk).
+**Optional:** `COOLDOWN_HOURS` (default `3`), `AIRDROP_DIVISOR` (default `2000`),
+`DBPATH` (default `./claims.db`).
 
-Build
------
-docker build -t airdrop-node .
+Run
+---
 
-Run (docker-compose)
---------------------
-Copy .env.example to .env and fill in the values, then:
+```bash
+cp .env.example .env   # fill values
+npm install
+npm start
 
-docker compose up -d
+# or
+docker compose --env-file .env up -d --build
+```
+
+Addresses are `0x` + 64 hex (`SHA3-256` of the ML-DSA-87 public key).
+Amounts are SIKKA with up to 9 decimals (`1 SIKKA = 10⁹ CHILLAR`).

@@ -1,15 +1,19 @@
 {
   "name": "sikka-airdrop-bot",
-  "version": "0.0.9",
-  "description": "Sikka airdrop bot Telegram edition",
+  "version": "0.1.0",
+  "description": "Sikka Telegram faucet, wallet, tips, and raffles",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "smoke": "node scripts/smoke.js"
   },
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
+    "@noble/post-quantum": "^0.6.1",
     "dotenv": "^16.4.7",
+    "json-bigint": "^1.0.0",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "telegraf": "^4.16.3"

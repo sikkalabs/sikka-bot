@@ -1,6 +1,23 @@
-export const NODE_HTTP_TIMEOUT = 10000;
+import JSONBig from 'json-bigint';
+
+export const NODE_HTTP_TIMEOUT = 15000;
 export const NODE_MAX_ATTEMPTS = 3;
 export const NODE_RETRY_DELAY = 500;
+
+const jsonBig = JSONBig({ useNativeBigInt: true, alwaysParseAsBig: false });
+
+let rpcId = 1;
+
+/** JSON with BigInt amounts as raw integers (matches wallet.html). */
+export function stringify(value) {
+  if (typeof value === 'bigint') return value.toString();
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stringify).join(',')}]`;
+  return `{${Object.entries(value)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${JSON.stringify(k)}:${stringify(v)}`)
+    .join(',')}}`;
+}
 
 export async function doNodeRequest(method, url, body) {
   let lastErr;
@@ -8,12 +25,12 @@ export async function doNodeRequest(method, url, body) {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), NODE_HTTP_TIMEOUT);
-      
+
       const options = {
         method,
-        headers: body ? { 'Content-Type': 'application/json' } : {},
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal
+        headers: body != null ? { 'Content-Type': 'application/json' } : {},
+        body: body != null ? (typeof body === 'string' ? body : stringify(body)) : undefined,
+        signal: controller.signal,
       };
 
       const resp = await fetch(url, options);
@@ -22,78 +39,47 @@ export async function doNodeRequest(method, url, body) {
       if (resp.status < 500 || attempt === NODE_MAX_ATTEMPTS) {
         return resp;
       }
-      
+
       lastErr = new Error(`status ${resp.status}`);
-      await resp.arrayBuffer(); // drain body
+      await resp.arrayBuffer();
     } catch (err) {
       lastErr = err;
     }
-    
+
     if (attempt < NODE_MAX_ATTEMPTS) {
-      await new Promise(r => setTimeout(r, attempt * NODE_RETRY_DELAY));
+      await new Promise((r) => setTimeout(r, attempt * NODE_RETRY_DELAY));
     }
   }
   throw new Error(`${method} ${url} failed after ${NODE_MAX_ATTEMPTS} attempts: ${lastErr}`);
 }
 
-export async function getAddressInfo(nodeURL, address) {
-  const url = `${nodeURL.replace(/\/$/, '')}/v1/address/${address}?limit=500`;
+export async function getHealth(nodeURL) {
+  const url = `${nodeURL.replace(/\/$/, '')}/api/health`;
   const resp = await doNodeRequest('GET', url);
+  const text = await resp.text();
   if (resp.status !== 200) {
-    const text = await resp.text();
-    throw new Error(`GET address ${resp.status}: ${text}`);
+    throw new Error(`GET health ${resp.status}: ${text}`);
   }
-  const env = await resp.json();
-  const info = {
-    address: env.meta.address,
-    balance: env.meta.balance,
-    utxo_count: env.meta.utxo_count,
-    utxos: env.items || []
-  };
-  if (info.address && info.address !== address) {
-    throw new Error(`address response mismatch`);
+  const health = jsonBig.parse(text);
+  if (health.height === undefined || health.height === null) {
+    throw new Error('node health missing height');
   }
-  return info;
-}
-
-export async function getNodeStatus(nodeURL) {
-  const url = `${nodeURL.replace(/\/$/, '')}/v1/status`;
-  const resp = await doNodeRequest('GET', url);
-  if (resp.status !== 200) {
-    const text = await resp.text();
-    throw new Error(`GET status ${resp.status}: ${text}`);
-  }
-  const status = await resp.json();
-  if (!status.tips || status.tips.length < 1) {
-    throw new Error("node status returned no tips");
-  }
-  
-  let dagSize = 0;
-  for (const key of ["dag_size", "dagSize", "dag_depth", "dagDepth", "height", "best_height", "bestHeight"]) {
-    if (status[key] !== undefined) {
-      const parsed = parseInt(status[key], 10);
-      if (!isNaN(parsed)) {
-        dagSize = parsed;
-        break;
-      }
-    }
-  }
-  status.dagSize = dagSize;
-  return status;
+  return health;
 }
 
 export async function selectBestNodeURL(nodeURLs) {
-  if (nodeURLs.length === 0) throw new Error("no node URLs configured");
-  let selectedURL = "";
-  let selectedDAGSize = -1;
+  if (nodeURLs.length === 0) throw new Error('no node URLs configured');
+  let selectedURL = '';
+  let selectedHeight = -1;
   let lastErr = null;
-  
+
   for (const nodeURL of nodeURLs) {
     try {
-      const status = await getNodeStatus(nodeURL);
-      if (selectedURL === "" || status.dagSize > selectedDAGSize) {
-        selectedURL = nodeURL;
-        selectedDAGSize = status.dagSize;
+      const health = await getHealth(nodeURL);
+      const height = Number(health.height);
+      if (selectedURL === '' || height > selectedHeight) {
+        selectedURL = nodeURL.replace(/\/$/, '');
+        selectedHeight = height;
       }
     } catch (err) {
       console.error(`skip sikka node ${nodeURL}: ${err.message}`);
@@ -101,44 +87,29 @@ export async function selectBestNodeURL(nodeURLs) {
     }
   }
   if (!selectedURL) {
-    throw lastErr || new Error("no valid node returned status");
+    throw lastErr || new Error('no valid node returned health');
   }
   return selectedURL;
 }
 
-export async function getTips(nodeURL) {
-  const status = await getNodeStatus(nodeURL);
-  if (status.tips.length === 1) {
-    return [status.tips[0], status.tips[0]];
-  }
-  return status.tips.slice(0, 2);
-}
-
-export async function getPowQuote(nodeURL, tx) {
-  const url = `${nodeURL.replace(/\/$/, '')}/v1/tx/pow-quote`;
-  const reqBody = { parents: tx.parents, timestamp: tx.timestamp };
-  const resp = await doNodeRequest('POST', url, reqBody);
-  if (resp.status !== 200) {
-    const text = await resp.text();
-    throw new Error(`pow quote ${resp.status}: ${text}`);
-  }
-  const quote = await resp.json();
-  if (quote.required_bits < 0) {
-    throw new Error(`invalid pow quote: required_bits=${quote.required_bits}`);
-  }
-  if (!quote.parent_pow_hashes || quote.parent_pow_hashes.length !== 2) {
-    throw new Error("pow quote missing or invalid parent_pow_hashes");
-  }
-  return quote;
-}
-
-export async function submitTx(nodeURL, tx) {
-  const url = `${nodeURL.replace(/\/$/, '')}/v1/tx/submit`;
-  const resp = await doNodeRequest('POST', url, tx);
+export async function rpc(nodeURL, method, params = null) {
+  const url = `${nodeURL.replace(/\/$/, '')}/api/rpc`;
+  const body = stringify({
+    jsonrpc: '2.0',
+    id: rpcId++,
+    method,
+    params,
+  });
+  const resp = await doNodeRequest('POST', url, body);
   const text = await resp.text();
-  if (resp.status !== 200) {
-    throw new Error(`submit tx ${resp.status}: ${text}`);
+  let parsed;
+  try {
+    parsed = jsonBig.parse(text);
+  } catch {
+    throw new Error(`bad RPC response (${resp.status}): ${text.slice(0, 200)}`);
   }
-  const sr = JSON.parse(text);
-  return sr.txid;
+  if (parsed.error) {
+    throw new Error(parsed.error.message || JSON.stringify(parsed.error));
+  }
+  return parsed.result;
 }

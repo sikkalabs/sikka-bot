@@ -1,163 +1,141 @@
-import crypto from 'crypto';
-import { encodeBech32m } from './bech32m.js';
-import { doNodeRequest, getAddressInfo, getTips, submitTx } from './api.js';
+/**
+ * SIKKA wallet + transfer client — same rules as public/wallet.html / docs/wallets.md.
+ */
+import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
+import { sha3_256 } from '@noble/hashes/sha3.js';
+import { rpc } from './api.js';
+import { validateAddress } from './address.js';
 
-export function derivePublicKey(seedHex) {
-  const seedBuf = Buffer.from(seedHex, 'hex');
-  const pkBuf = Buffer.alloc(1793);
-  const hash = crypto.createHash('sha3-256').update(seedBuf).digest();
-  for (let i = 0; i < 1793; i++) {
-    pkBuf[i] = hash[i % 32] ^ (i & 0xff);
-  }
-  return pkBuf;
+export const SEED_LEN = 32;
+export const SK_LEN = 4896;
+export const PK_LEN = 2592;
+export const SIG_LEN = 4627;
+export const CHILLAR_PER_SIKKA = 1_000_000_000n;
+
+const TX_SIGNING_TAG = new TextEncoder().encode('SIKKA/tx/v1');
+const SIGNING_CONTEXT = new TextEncoder().encode('SIKKA-v1');
+
+export function hex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export function createWallet(seedHex) {
-  const formattedSeed = String(seedHex).padStart(64, '0').slice(0, 64);
-  const seedBuf = Buffer.from(formattedSeed, 'hex');
-  const pkBuf = derivePublicKey(formattedSeed);
-  const pkHash = crypto.createHash('sha3-256').update(pkBuf).digest();
-  const address = encodeBech32m('sikka', 1, pkHash);
+export function unhex(text) {
+  const clean = String(text).trim().replace(/^0x/i, '').replace(/\s+/g, '');
+  if (!/^[0-9a-fA-F]*$/.test(clean) || clean.length % 2) {
+    throw new Error('expected even-length hex');
+  }
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
 
-  return {
-    seedHex: formattedSeed,
-    address,
-    publicKeyHex: pkBuf.toString('hex'),
-    privateKeyHex: seedBuf.toString('hex'),
-    sign(payloadBuf) {
-      const sigBuf = Buffer.alloc(1280);
-      const h = crypto.createHash('sha3-256').update(payloadBuf).update(seedBuf).digest();
-      for (let i = 0; i < 1280; i++) {
-        sigBuf[i] = h[i % 32] ^ ((i * 7) & 0xff);
-      }
-      return sigBuf.toString('hex');
-    }
+function concat(...parts) {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+}
+
+function u64le(n) {
+  const v = BigInt(n);
+  if (v < 0n || v > 0xffffffffffffffffn) throw new Error('u64 out of range');
+  const out = new Uint8Array(8);
+  let x = v;
+  for (let i = 0; i < 8; i++) {
+    out[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return out;
+}
+
+export function asBig(v) {
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number') return BigInt(Math.trunc(v));
+  if (typeof v === 'string') return BigInt(v);
+  return 0n;
+}
+
+export function formatSikka(chillar) {
+  const c = asBig(chillar);
+  const sign = c < 0n ? '-' : '';
+  const abs = c < 0n ? -c : c;
+  const whole = abs / CHILLAR_PER_SIKKA;
+  const frac = abs % CHILLAR_PER_SIKKA;
+  if (frac === 0n) return `${sign}${whole}`;
+  return `${sign}${whole}.${frac.toString().padStart(9, '0').replace(/0+$/, '')}`;
+}
+
+/** Parse a decimal SIKKA amount into CHILLAR (max 9 fractional digits). */
+export function parseSikka(input) {
+  const text = String(input).trim();
+  if (!text) throw new Error('empty amount');
+  if (/^all$/i.test(text)) throw new Error('use amount "all" only where supported');
+  const [wholeRaw, fracRaw = ''] = text.split('.');
+  if (fracRaw.length > 9) throw new Error('at most 9 decimal places');
+  if (!/^\d*$/.test(wholeRaw) || !/^\d*$/.test(fracRaw)) {
+    throw new Error('not a decimal amount');
+  }
+  if (!wholeRaw && !fracRaw) throw new Error('empty amount');
+  const whole = BigInt(wholeRaw || '0');
+  const frac = BigInt(fracRaw.padEnd(9, '0') || '0');
+  return whole * CHILLAR_PER_SIKKA + frac;
+}
+
+function signingBytes({ kind, from, to, amount, nonce, timestamp }) {
+  return concat(
+    TX_SIGNING_TAG,
+    Uint8Array.of(kind),
+    from,
+    to,
+    u64le(amount),
+    u64le(nonce),
+    u64le(timestamp)
+  );
+}
+
+function walletFromKeys(secretKey, publicKey, seed) {
+  if (secretKey.length !== SK_LEN) {
+    throw new Error(`private key must be ${SK_LEN} bytes`);
+  }
+  if (publicKey.length !== PK_LEN) {
+    throw new Error(`public key must be ${PK_LEN} bytes`);
+  }
+  const wallet = {
+    address: `0x${hex(sha3_256(publicKey))}`,
+    publicKey,
+    secretKey,
+    publicKeyHex: hex(publicKey),
+    privateKeyHex: hex(secretKey),
+    scheme: 'ML-DSA-87',
   };
+  if (seed && seed.length === SEED_LEN) {
+    wallet.seedHex = hex(seed);
+  }
+  return wallet;
 }
 
-export function computeTxIdRaw(tx) {
-  const parts = [];
-  parts.push(Buffer.from([0x02]));
-
-  // Parents
-  const pCount = Buffer.alloc(4);
-  pCount.writeUInt32BE(tx.parents.length);
-  parts.push(pCount);
-  for (const parentId of tx.parents) {
-    parts.push(Buffer.from(parentId, 'hex'));
+/**
+ * Build a wallet from a 32-byte seed hex or a full 4896-byte ML-DSA-87 private key hex.
+ */
+export function createWallet(seedOrKeyHex) {
+  const bytes = unhex(seedOrKeyHex);
+  if (bytes.length === SEED_LEN) {
+    const { secretKey, publicKey } = ml_dsa87.keygen(bytes);
+    return walletFromKeys(secretKey, publicKey, bytes);
   }
-
-  // Inputs
-  const iCount = Buffer.alloc(4);
-  iCount.writeUInt32BE(tx.inputs.length);
-  parts.push(iCount);
-  for (const input of tx.inputs) {
-    parts.push(Buffer.from(input.txid, 'hex'));
-    const idx = Buffer.alloc(4);
-    idx.writeUInt32BE(input.index);
-    parts.push(idx);
+  if (bytes.length === SK_LEN) {
+    const publicKey = ml_dsa87.getPublicKey(bytes);
+    return walletFromKeys(bytes, publicKey);
   }
-
-  // Outputs
-  const oCount = Buffer.alloc(4);
-  oCount.writeUInt32BE(tx.outputs.length);
-  parts.push(oCount);
-  for (const output of tx.outputs) {
-    const addrBytes = Buffer.from(output.address, 'utf8');
-    const aLen = Buffer.alloc(2);
-    aLen.writeUInt16BE(addrBytes.length);
-    parts.push(aLen);
-    parts.push(addrBytes);
-
-    const val = Buffer.alloc(8);
-    val.writeBigUInt64BE(BigInt(output.value));
-    parts.push(val);
-  }
-
-  // Timestamp
-  const ts = Buffer.alloc(8);
-  ts.writeBigInt64BE(BigInt(tx.timestamp));
-  parts.push(ts);
-
-  // Optional Memo (Max 32 bytes)
-  if (tx.memo) {
-    const memoBytes = Buffer.from(tx.memo, 'utf8').slice(0, 32);
-    const mLen = Buffer.alloc(2);
-    mLen.writeUInt16BE(memoBytes.length);
-    parts.push(mLen);
-    parts.push(memoBytes);
-  } else {
-    parts.push(Buffer.from([0x00, 0x00]));
-  }
-
-  const fullBuf = Buffer.concat(parts);
-  return crypto.createHash('sha3-256').update(fullBuf).digest();
-}
-
-export function computeSigningPayload(txIdRaw, inputIndex, spentTxIdRaw, spentOutputIndex, spentValue, spentAddress) {
-  const parts = [];
-  parts.push(Buffer.from('sikka:mldsa87:signing_domain', 'utf8'));
-  parts.push(txIdRaw);
-
-  const idxBuf = Buffer.alloc(8);
-  idxBuf.writeBigUInt64BE(BigInt(inputIndex));
-  parts.push(idxBuf);
-
-  parts.push(spentTxIdRaw);
-
-  const outIdxBuf = Buffer.alloc(8);
-  outIdxBuf.writeBigUInt64BE(BigInt(spentOutputIndex));
-  parts.push(outIdxBuf);
-
-  const valBuf = Buffer.alloc(8);
-  valBuf.writeBigUInt64BE(BigInt(spentValue));
-  parts.push(valBuf);
-
-  const addrBytes = Buffer.from(spentAddress, 'utf8');
-  const aLen = Buffer.alloc(2);
-  aLen.writeUInt16BE(addrBytes.length);
-  parts.push(aLen);
-  parts.push(addrBytes);
-
-  return crypto.createHash('sha3-256').update(Buffer.concat(parts)).digest();
-}
-
-export function solveTxPow(tx, requiredBits = 0) {
-  const txIdRaw = computeTxIdRaw(tx);
-  let p0 = Buffer.alloc(32);
-  let p1 = Buffer.alloc(32);
-
-  if (tx.parent_pow_hashes && tx.parent_pow_hashes.length >= 1) {
-    p0 = Buffer.from(tx.parent_pow_hashes[0], 'hex');
-  }
-  if (tx.parent_pow_hashes && tx.parent_pow_hashes.length >= 2) {
-    p1 = Buffer.from(tx.parent_pow_hashes[1], 'hex');
-  }
-
-  for (let nonce = 0n; nonce < 1000000n; nonce++) {
-    const nonceBuf = Buffer.alloc(8);
-    nonceBuf.writeBigUInt64BE(nonce);
-
-    const buf = Buffer.concat([txIdRaw, p0, p1, nonceBuf]);
-    const hash = crypto.createHash('sha3-256').update(buf).digest();
-
-    let bits = 0;
-    for (const b of hash) {
-      if (b === 0) {
-        bits += 8;
-      } else {
-        bits += Math.clz32(b) - 24;
-        break;
-      }
-    }
-
-    if (bits >= requiredBits) {
-      tx.pow_nonce = Number(nonce);
-      tx.pow_bits = bits;
-      return bits;
-    }
-  }
-  return 0;
+  throw new Error(
+    `unrecognized key length ${bytes.length}: use 32-byte seed or ${SK_LEN}-byte ML-DSA-87 key`
+  );
 }
 
 export class SikkaClient {
@@ -170,78 +148,78 @@ export class SikkaClient {
     }
   }
 
-  async balance() {
-    if (!this.wallet || !this.wallet.address) {
-      throw new Error('SikkaClient wallet address is required');
-    }
-    const info = await getAddressInfo(this.nodeURL, this.wallet.address);
-    return BigInt(info.balance || 0);
+  async account(address = this.wallet?.address) {
+    if (!address) throw new Error('address required');
+    return rpc(this.nodeURL, 'account.get', { address });
   }
 
-  async send(amount, recipientAddress, memo) {
-    if (!this.wallet || !this.wallet.address) {
-      throw new Error('SikkaClient wallet address is required');
-    }
-    const amountBI = BigInt(amount);
-    const info = await getAddressInfo(this.nodeURL, this.wallet.address);
-    const utxos = info.utxos || [];
+  async balance() {
+    const info = await this.account();
+    return asBig(info.balance);
+  }
 
-    let accumulated = 0n;
-    const selected = [];
-    for (const u of utxos) {
-      selected.push(u);
-      accumulated += BigInt(u.value);
-      if (accumulated >= amountBI) break;
-    }
-
-    if (accumulated < amountBI) {
-      throw new Error(`insufficient balance: accumulated ${accumulated} chillar < required ${amountBI} chillar`);
-    }
-
-    const change = accumulated - amountBI;
-    const tips = await getTips(this.nodeURL);
-
-    const tx = {
-      id: '',
-      parents: tips,
-      parent_pow_hashes: null,
-      inputs: selected.map(u => ({
-        txid: u.txid,
-        index: u.index,
-        witness: null
-      })),
-      outputs: [
-        { address: recipientAddress, value: Number(amountBI) },
-        ...(change > 0n ? [{ address: this.wallet.address, value: Number(change) }] : [])
-      ],
-      pow_nonce: 0,
-      pow_bits: 0,
-      timestamp: Math.floor(Date.now() / 1000),
-      witness_stripped: null,
-      memo: memo ? String(memo).slice(0, 32) : null
-    };
-
-    const txIdRaw = computeTxIdRaw(tx);
-
-    tx.inputs.forEach((input, i) => {
-      const u = selected[i];
-      const spentTxIdRaw = Buffer.from(u.txid, 'hex');
-      const payloadBuf = computeSigningPayload(txIdRaw, i, spentTxIdRaw, u.index, u.value, u.address);
-      const sigHex = this.wallet.sign(payloadBuf);
-
-      input.witness = {
-        witness_type: 'falcon1024',
-        threshold: {
-          threshold: 1,
-          public_keys: [this.wallet.publicKeyHex],
-          signatures: [sigHex]
-        }
-      };
+  signTransfer(toHex, amountChillar, nonce) {
+    if (!this.wallet) throw new Error('wallet required');
+    const toNorm = validateAddress(toHex);
+    const from = unhex(this.wallet.address);
+    const to = unhex(toNorm);
+    if (to.length !== 32) throw new Error('recipient must be a 32-byte address');
+    const timestamp = BigInt(Math.floor(Date.now() / 1000));
+    const amount = asBig(amountChillar);
+    const msg = signingBytes({
+      kind: 0,
+      from,
+      to,
+      amount,
+      nonce: asBig(nonce),
+      timestamp,
     });
+    const signature = ml_dsa87.sign(msg, this.wallet.secretKey, {
+      context: SIGNING_CONTEXT,
+    });
+    if (signature.length !== SIG_LEN) {
+      throw new Error(`signature length ${signature.length}, expected ${SIG_LEN}`);
+    }
+    return {
+      kind: 'transfer',
+      from: this.wallet.address,
+      to: toNorm,
+      amount,
+      nonce: asBig(nonce),
+      timestamp,
+      public_key: this.wallet.publicKeyHex,
+      signature: hex(signature),
+    };
+  }
 
-    solveTxPow(tx, 0);
-    const txID = await submitTx(this.nodeURL, tx);
+  /**
+   * Sign and submit a transfer. Amount is CHILLAR.
+   * @returns {{ txID: string, sentAmount: bigint, accepted: boolean }}
+   */
+  async send(amount, recipientAddress) {
+    if (!this.wallet) throw new Error('SikkaClient wallet is required');
+    const amountBI = asBig(amount);
+    if (amountBI <= 0n) throw new Error('amount must be positive');
 
-    return { txID, sentAmount: amountBI };
+    const account = await this.account();
+    const bal = asBig(account.balance);
+    if (bal < amountBI) {
+      throw new Error(`insufficient balance: have ${bal} chillar, need ${amountBI} chillar`);
+    }
+    const credits = Number(account.credits_now ?? account.credits ?? 0);
+    if (credits < 1) {
+      throw new Error(
+        `insufficient credits for ${this.wallet.address}: has ${credits}, needs 1`
+      );
+    }
+
+    const nonce = asBig(account.next_nonce);
+    const tx = this.signTransfer(recipientAddress, amountBI, nonce);
+    const receipt = await rpc(this.nodeURL, 'tx.submit', { transaction: tx });
+    return {
+      txID: receipt.id,
+      sentAmount: amountBI,
+      accepted: !!receipt.accepted,
+    };
   }
 }
