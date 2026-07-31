@@ -12,7 +12,6 @@ services:
       - PRIVATEKEY=${PRIVATEKEY}
       - TELEGRAMTOKEN=${TELEGRAMTOKEN}
       - TELEGRAMGROUP=${TELEGRAMGROUP}
-      - AIRDROP_DIVISOR=2000
 
 volumes:
   airdrop-data:

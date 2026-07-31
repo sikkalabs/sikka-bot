@@ -32,7 +32,7 @@ async function replyThenDelete(ctx, text, opts = {}, delaySec = 30) {
 dotenv.config();
 
 const subunitsPerSikka = CHILLAR_PER_SIKKA; // 1 SIKKA = 10⁹ CHILLAR
-const airdropDivisor = BigInt(process.env.AIRDROP_DIVISOR || "2000");
+const airdropDivisor = 2000n;
 
 function formatSikkaDisplay(chillar) {
   const c = asBig(chillar);
@@ -106,7 +106,7 @@ async function main() {
   const wallet = createWallet(privKeyHex);
   console.log(`Faucet address: ${wallet.address}`);
   
-  const dbPath = process.env.DBPATH || path.join(process.cwd(), 'claims.db');
+  const dbPath = path.join(process.cwd(), 'claims.db');
   const db = await initDB(dbPath);
   console.log(`Database initialized at ${dbPath}`);
   

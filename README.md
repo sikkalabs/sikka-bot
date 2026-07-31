@@ -30,8 +30,6 @@ Environment Variables
 | `TELEGRAMTOKEN` | BotFather token. |
 | `TELEGRAMGROUP` | Group chat id (e.g. `-100…`). |
 
-**Optional:** `COOLDOWN_HOURS` (default `5`), `AIRDROP_DIVISOR` (default `2000`),
-`DBPATH` (default `./claims.db`).
 
 Run
 ---
