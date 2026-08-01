@@ -17,7 +17,7 @@ How It Works
   address derived from `PRIVATEKEY` + Telegram user id.
 - **Tips / raffles** — group commands move funds between those custodial wallets.
 
-Each on-chain send burns **1 spam credit** (+1/min, cap 100).
+Each on-chain send burns **1% battery** (+1%/min, cap 100%).
 
 Environment Variables
 ---------------------

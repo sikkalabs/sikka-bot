@@ -57,11 +57,16 @@ function formatSikkaDisplay(chillar) {
   return `${formatSikkaAmount(c)} SIKKA`;
 }
 
+function getBatteryIcon(pct) {
+  if (pct <= 20) return '🪫';
+  return '🔋';
+}
+
 function humanizeSendError(err) {
   const msg = err.message || '';
 
-  if (/insufficient credits/i.test(msg)) {
-    return `Not enough transaction credits. Please wait a minute and try again.`;
+  if (/insufficient credits|insufficient battery/i.test(msg)) {
+    return `Not enough transaction battery. Please wait a minute and try again.`;
   }
 
   if (msg.includes('faucet is empty') || msg.includes('balance too low') || /insufficient balance/i.test(msg)) {
@@ -280,8 +285,11 @@ async function main() {
       const account = await client.account();
       const bal = asBig(account.balance);
       const credits = account.credits_now ?? account.credits ?? 0;
+      const maxCredits = account.credits_max ?? account.max_credits ?? 100;
+      const pct = Math.min(100, Math.max(0, Math.round((Number(credits) / Number(maxCredits)) * 100)));
+      const batteryIcon = getBatteryIcon(pct);
       await ctx.reply(
-        `Your balance: *${formatSikkaDisplay(bal)}*\nCredits: *${credits}*\n\nAddress:\n\`${uWallet.address}\`\n\n[Open wallet UI](${selectedNodeURL}/wallet.html)`,
+        `Your balance: *${formatSikkaDisplay(bal)}*\nBattery: *${batteryIcon} ${pct}%*\n\nAddress:\n\`${uWallet.address}\`\n\n[Open wallet UI](${selectedNodeURL}/wallet.html)`,
         { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
       );
     } catch (err) {
