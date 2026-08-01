@@ -7,6 +7,8 @@ Custodial faucet, wallets, tips, and raffles for the current SIKKA chain
 Matches the protocol documented in the main repo:
 [docs/wallets.md](https://github.com/sikkalabs/sikka/blob/main/docs/wallets.md)
 and the reference wallet at `/wallet.html`.
+Transfers are signed as **`SIKKA/tx/v3`** with the node’s `chain_id`
+(from `chain.info`), ML-DSA-87 context `SIKKA-v1`.
 
 How It Works
 ------------

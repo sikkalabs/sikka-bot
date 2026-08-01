@@ -12,7 +12,7 @@ export const PK_LEN = 2592;
 export const SIG_LEN = 4627;
 export const CHILLAR_PER_SIKKA = 1_000_000_000n;
 
-const TX_SIGNING_TAG = new TextEncoder().encode('SIKKA/tx/v1');
+const TX_SIGNING_TAG = new TextEncoder().encode('SIKKA/tx/v3');
 const SIGNING_CONTEXT = new TextEncoder().encode('SIKKA-v1');
 
 export function hex(bytes) {
@@ -54,6 +54,20 @@ function u64le(n) {
   return out;
 }
 
+function u32le(n) {
+  const v = Number(n);
+  if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) {
+    throw new Error('u32 out of range');
+  }
+  return Uint8Array.of(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
+}
+
+/** Writer::str: u32 little-endian length + utf8 bytes. */
+function encodeStr(text) {
+  const bytes = new TextEncoder().encode(text);
+  return concat(u32le(bytes.length), bytes);
+}
+
 export function asBig(v) {
   if (typeof v === 'bigint') return v;
   if (typeof v === 'number') return BigInt(Math.trunc(v));
@@ -87,15 +101,37 @@ export function parseSikka(input) {
   return whole * CHILLAR_PER_SIKKA + frac;
 }
 
-function signingBytes({ kind, from, to, amount, nonce, timestamp }) {
+// Matches Transaction::signing_bytes (v3):
+// tag || str(chain_id) || kind || from || to || amount || nonce || timestamp || public_key
+export function signingBytes({
+  chainId,
+  kind,
+  from,
+  to,
+  amount,
+  nonce,
+  timestamp,
+  publicKey,
+}) {
+  if (typeof chainId !== 'string' || !chainId) {
+    throw new Error('chain_id required for signing');
+  }
+  if (from.length !== 32 || to.length !== 32) {
+    throw new Error('from/to must be 32 raw address bytes');
+  }
+  if (publicKey.length !== PK_LEN) {
+    throw new Error(`public key must be ${PK_LEN} bytes`);
+  }
   return concat(
     TX_SIGNING_TAG,
+    encodeStr(chainId),
     Uint8Array.of(kind),
     from,
     to,
     u64le(amount),
     u64le(nonce),
-    u64le(timestamp)
+    u64le(timestamp),
+    publicKey
   );
 }
 
@@ -145,6 +181,7 @@ export class SikkaClient {
     } else {
       this.nodeURL = (opts.nodeURL || 'http://127.0.0.1:64552').replace(/\/$/, '');
       this.wallet = opts.wallet;
+      if (opts.chainId) this.chainId = opts.chainId;
     }
   }
 
@@ -158,21 +195,46 @@ export class SikkaClient {
     return asBig(info.balance);
   }
 
-  signTransfer(toHex, amountChillar, nonce) {
+  /** Fetch and cache `chain.info.chain_id` (exact string used in signatures). */
+  async ensureChainId() {
+    if (typeof this.chainId === 'string' && this.chainId) return this.chainId;
+    const info = await rpc(this.nodeURL, 'chain.info');
+    if (typeof info.chain_id !== 'string' || !info.chain_id) {
+      throw new Error('node did not return chain_id');
+    }
+    this.chainId = info.chain_id;
+    return this.chainId;
+  }
+
+  /**
+   * Sign a transfer for `chainId` (must match the target node's `chain.info`).
+   * @param {string} toHex
+   * @param {bigint|number|string} amountChillar
+   * @param {bigint|number|string} nonce
+   * @param {string} chainId
+   */
+  signTransfer(toHex, amountChillar, nonce, chainId) {
     if (!this.wallet) throw new Error('wallet required');
+    if (typeof chainId !== 'string' || !chainId) {
+      throw new Error('chain_id required for signing');
+    }
     const toNorm = validateAddress(toHex);
     const from = unhex(this.wallet.address);
     const to = unhex(toNorm);
-    if (to.length !== 32) throw new Error('recipient must be a 32-byte address');
+    if (from.length !== 32) throw new Error('wallet address corrupt');
+    if (hex(from) === hex(to)) throw new Error('cannot send to yourself');
     const timestamp = BigInt(Math.floor(Date.now() / 1000));
     const amount = asBig(amountChillar);
+    if (amount <= 0n) throw new Error('amount must be positive');
     const msg = signingBytes({
+      chainId,
       kind: 0,
       from,
       to,
       amount,
       nonce: asBig(nonce),
       timestamp,
+      publicKey: this.wallet.publicKey,
     });
     const signature = ml_dsa87.sign(msg, this.wallet.secretKey, {
       context: SIGNING_CONTEXT,
@@ -187,6 +249,7 @@ export class SikkaClient {
       amount,
       nonce: asBig(nonce),
       timestamp,
+      chain_id: chainId,
       public_key: this.wallet.publicKeyHex,
       signature: hex(signature),
     };
@@ -213,8 +276,9 @@ export class SikkaClient {
       );
     }
 
+    const chainId = await this.ensureChainId();
     const nonce = asBig(account.next_nonce);
-    const tx = this.signTransfer(recipientAddress, amountBI, nonce);
+    const tx = this.signTransfer(recipientAddress, amountBI, nonce, chainId);
     const receipt = await rpc(this.nodeURL, 'tx.submit', { transaction: tx });
     return {
       txID: receipt.id,
