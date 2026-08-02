@@ -61,6 +61,12 @@ const MIN_RAIN_SHARE = 10_000_000n; // 0.01 SIKKA — smallest drop we pay out
 const MAX_RAIN_PAYOUTS = 80;
 const RAIN_TIMEOUT_SEC = 5 * 60; // rain auto-closes after 5 min if not fully claimed
 
+// ─── Member-add reward ──────────────────────────────────────────────────────
+// Auto-tip when someone adds new members to the group. Paid from the faucet
+// wallet. A cooldown per adder deters add/remove farming.
+const MEMBER_ADD_REWARD = 7_000_000_000n; // 7 SIKKA per added member
+const MEMBER_ADD_COOLDOWN_MS = 10 * 60 * 1000; // 10 min between rewards per user
+
 // Ordinal suffix for rain drop numbering: 1st, 2nd, 3rd, 4th, ...
 function rainOrdinal(i) {
   const n = i + 1;
@@ -1382,6 +1388,47 @@ async function main() {
       await new Promise(r => setTimeout(r, 1000));
     } finally {
       processingUsers.delete(userId);
+    }
+  });
+
+  // Auto-tip the user who adds new members to the group. Telegram sends a
+  // new_chat_members service message with `from` = the adder when a member is
+  // added by someone else. Ignore self-joins (invite links) and bots.
+  const memberAddCooldown = new Map(); // userId → last reward timestamp
+  bot.on(message('new_chat_members'), async (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    const adder = ctx.message.from;
+    const newMembers = ctx.message.new_chat_members || [];
+    if (!adder || newMembers.length === 0) return;
+    // Only reward when the adder added someone else (not joining themselves)
+    if (newMembers.some(m => m.id === adder.id)) return;
+    // Skip bot accounts being added (including this bot)
+    if (newMembers.some(m => m.is_bot)) return;
+
+    const now = Date.now();
+    if (now - (memberAddCooldown.get(adder.id) || 0) < MEMBER_ADD_COOLDOWN_MS) return;
+    memberAddCooldown.set(adder.id, now);
+
+    const reward = MEMBER_ADD_REWARD * BigInt(newMembers.length);
+    try {
+      const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
+      if (BigInt(await client.balance()) < reward) return; // faucet too low — skip silently
+      const recipientWallet = getUserWallet(adder.id);
+      const { txID } = await client.send(reward, recipientWallet.address);
+      const n = newMembers.length;
+      const name = adder.first_name || adder.username || 'Someone';
+      await replyThenDelete(
+        ctx,
+        `🎁 *${name}* added ${n} new member${n > 1 ? 's' : ''} — reward of *${formatSikkaDisplay(reward)}* sent! 🎉\n\nTx: \`${txID}\``,
+        { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+      );
+      ctx.telegram.sendMessage(
+        adder.id,
+        `🎁 You received *${formatSikkaDisplay(reward)}* for adding members to the group!\n\nIt's in your wallet:\n\`${recipientWallet.address}\``,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    } catch (err) {
+      console.error('Member add reward error:', err);
     }
   });
   
