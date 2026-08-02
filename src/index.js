@@ -167,7 +167,38 @@ async function main() {
   console.log(`Database initialized at ${dbPath}`);
   
   const bot = new Telegraf(telegramToken);
-  
+
+  // Normalise command case — Telegram sends the command text verbatim, so
+  // /Claim would not match bot.command('claim'). Lowercase just the command
+  // token (preserving any @botname and overall length so entity offsets stay valid).
+  //
+  // Also: Telegram delivers every command in a group to every bot in the chat,
+  // but Telegraf's bot.command() rejects commands whose @botname suffix doesn't
+  // match this bot's username (e.g. /join@sikkalabsbot on a bot that is
+  // @sikkawalletbot). Override ctx.me so any @botname suffix is accepted —
+  // matching how the /me rain handler already behaves.
+  bot.use((ctx, next) => {
+    const msg = ctx.message;
+    const entity = msg?.entities?.[0];
+    if (msg?.text && entity?.type === 'bot_command' && entity.offset === 0) {
+      const cmd = msg.text.slice(0, entity.length);
+      const at = cmd.indexOf('@');
+      const cmdPart = at === -1 ? cmd : cmd.slice(0, at);
+      const rest = at === -1 ? '' : cmd.slice(at);
+      if (cmdPart !== cmdPart.toLowerCase()) {
+        msg.text = cmdPart.toLowerCase() + rest + msg.text.slice(entity.length);
+      }
+      if (at !== -1) {
+        Object.defineProperty(ctx, 'me', {
+          value: cmd.slice(at + 1),
+          configurable: true,
+          enumerable: true,
+        });
+      }
+    }
+    return next();
+  });
+
   // ── Help renderer ────────────────────────────────────────────────────────
   // Returns HTML-formatted help text tailored to where the command was sent.
   function helpText(isPrivate) {
@@ -1153,8 +1184,10 @@ async function main() {
 
     const text = ctx.message.text;
 
-    // /me — grab a drop from the active rain (first come, first served)
-    if (/^\/me(\s|$)/.test(text)) {
+    // /me — grab a drop from the active rain (first come, first served).
+    // Allow an optional @botname suffix (/me@sikkawalletbot) like Telegram adds
+    // when the command is sent from a client that appends it.
+    if (/^\/me(@[a-zA-Z0-9_]+)?(\s|$)/.test(text)) {
       const userId = ctx.from.id;
       const opts = { reply_parameters: { message_id: ctx.message.message_id } };
       if (claimingRainUsers.has(userId)) {
