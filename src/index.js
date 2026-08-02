@@ -1,7 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
-import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canStartRaffle, createRain, getActiveRain, addRainClaim, addRainClaimTx, removeRainClaim, getRainClaims, hasUserClaimedRain, closeRain, cancelRain } from './db.js';
+import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canStartRaffle, createRain, getActiveRain, addRainClaim, addRainClaimTx, removeRainClaim, getRainClaims, hasUserClaimedRain, closeRain } from './db.js';
 import { selectBestNodeURL } from './api.js';
 import {
   SikkaClient,
@@ -54,11 +54,11 @@ const airdropDivisor = 2000n;
 
 // ─── Rain constants ─────────────────────────────────────────────────────────
 const MIN_RAIN_SHARE = 10_000_000n; // 0.01 SIKKA — smallest drop we pay out
-// Battery safety: the bot wallet's credit pool maxes at 100 credits and each
-// send burns ~1 credit. Cap the TOTAL bot-wallet sends per rain (payouts +
-// leftover refund) at 80 so a rain never drains the battery dry.
-const MAX_RAIN_TXNS = 80;
-const MAX_RAIN_PAYOUTS = MAX_RAIN_TXNS - 1; // −1 for the leftover refund tx
+// Rain pays every drop DIRECTLY from the starter's wallet to the claimant
+// (same as /tip), so the bot wallet's battery is never touched. Each drop still
+// burns ~1 credit from the starter's wallet (pool maxes at 100), so cap the
+// number of drops at 80 to keep a single rain within the starter's battery.
+const MAX_RAIN_PAYOUTS = 80;
 const RAIN_TIMEOUT_SEC = 5 * 60; // rain auto-closes after 5 min if not fully claimed
 
 // Ordinal suffix for rain drop numbering: 1st, 2nd, 3rd, 4th, ...
@@ -896,16 +896,9 @@ async function main() {
 
       const rainId = await createRain(db, pot.toString(), schedule.shares.length, starterId);
 
-      // Collect the pot from the starter — roll back the DB row if the send fails
-      let fundTx;
-      try {
-        const result = await starterClient.send(pot, wallet.address);
-        fundTx = result.txID;
-      } catch (sendErr) {
-        await cancelRain(db, rainId);
-        return replyThenDelete(ctx, humanizeSendError(sendErr), { parse_mode: 'Markdown', ...replyOpts });
-      }
-
+      // No up-front collection — drops are paid directly from the starter's
+      // wallet to each claimant (balance already checked above, and re-checked
+      // before every /me payout).
       const dropText = schedule.shares.map((d, i) => `${rainOrdinal(i)} ${formatSikkaDisplay(d)}`).join(' · ');
       const starterTag = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
       await replyThenDelete(
@@ -913,8 +906,7 @@ async function main() {
         `🌧 **New Rain!** 🌧\n\n` +
         `${starterTag} is dropping *${formatSikkaDisplay(pot)}* to up to *${schedule.shares.length}* people!\n\n` +
         `Drops: ${dropText}\n\n` +
-        `⏳ ${Math.floor(RAIN_TIMEOUT_SEC / 60)} min — type *\/me* to grab a drop!\n\n` +
-        `Tx: \`${fundTx}\``,
+        `⏳ ${Math.floor(RAIN_TIMEOUT_SEC / 60)} min — type *\/me* to grab a drop!`,
         { parse_mode: 'Markdown' }
       );
     } catch (err) {
@@ -1089,8 +1081,8 @@ async function main() {
   }, 30000);
 
   // Background loop to resolve rains: close when every drop is paid out, or
-  // when the rain times out (unclaimed drops + leftover are refunded to the
-  // starter).
+  // when the rain times out (unclaimed drops simply stay in the starter's
+  // wallet — there's nothing to refund since drops pay directly).
   let isResolvingRain = false;
   setInterval(async () => {
     if (isResolvingRain) return;
@@ -1113,33 +1105,17 @@ async function main() {
       const paid = claims.reduce((s, c) => s + BigInt(c.share), 0n);
       const leftover = pot - paid;
 
-      let leftoverTx = null;
-      if (leftover > 0n) {
-        try {
-          const starterWallet = getUserWallet(active.starter_id);
-          const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
-          const res = await fclient.send(leftover, starterWallet.address);
-          leftoverTx = res.txID;
-        } catch (e) {
-          console.error(`Rain leftover refund failed for rain=${active.id}:`, e.message);
-        }
-      }
-
       const reason = allPaid ? 'All drops taken!' : 'Time up!';
-      let msg =
+      const msg =
         `🌧 **Rain over — ${reason}**\n\n` +
         `☔ Drops claimed: ${claims.length}/${schedule.shares.length}\n` +
         `💰 Total dropped: ${formatSikkaDisplay(paid)}\n` +
         (leftover > 0n
-          ? `↩️ Leftover returned to starter: ${formatSikkaDisplay(leftover)}${leftoverTx ? `\nTx: \`${leftoverTx}\`` : ''}\n`
+          ? `↩️ Unclaimed: ${formatSikkaDisplay(leftover)} stays in the starter's wallet.\n`
           : '');
       bot.telegram.sendMessage(telegramGroup, msg, { parse_mode: 'Markdown' })
         .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
         .catch(console.error);
-
-      if (leftover > 0n && !leftoverTx) {
-        bot.telegram.sendMessage(telegramGroup, `⚠️ Leftover refund failed — funds remain in the bot wallet.`).catch(console.error);
-      }
     } catch (e) {
       console.error('Rain resolution error:', e);
     } finally {
@@ -1197,24 +1173,55 @@ async function main() {
           if (claims.length >= schedule.shares.length) return { status: 'full' };
           const slot = claims.length;
           const share = schedule.shares[slot];
+          // Direct pay: the drop comes from the STARTER's wallet (not the bot),
+          // so confirm they can still cover it before reserving the slot. Their
+          // balance can drop mid-rain (they can /send, /tip, /withdraw in
+          // between), and if they can't cover any more drops the rain is over.
+          const starterClient = new SikkaClient({
+            nodeURL: selectedNodeURL,
+            wallet: getUserWallet(activeNow.starter_id),
+          });
+          if ((await starterClient.balance()) < share) {
+            return { status: 'starter_broke', rainId: activeNow.id };
+          }
           // Record the claim FIRST (reserves the slot), then send funds —
           // rolled back if the send fails.
           await addRainClaim(db, activeNow.id, userId, share.toString(), null);
-          return { status: 'ok', rainId: activeNow.id, slot, share, schedule };
+          return { status: 'ok', rainId: activeNow.id, starterId: activeNow.starter_id, slot, share, schedule };
         });
 
         if (claim.status === 'none') return replyThenDelete(ctx, 'No active rain right now.', opts);
         if (claim.status === 'already') return replyThenDelete(ctx, 'You already grabbed a drop from this rain!', opts);
         if (claim.status === 'full') return replyThenDelete(ctx, 'All drops have been taken! 🌧', opts);
+        if (claim.status === 'starter_broke') {
+          // The starter can no longer cover any drops — end the rain. Unclaimed
+          // shares simply stay in the starter's wallet (nothing to refund).
+          await closeRain(db, claim.rainId);
+          bot.telegram.sendMessage(telegramGroup, `🌧 **Rain over — starter ran out of funds.**`, { parse_mode: 'Markdown' })
+            .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
+            .catch(console.error);
+          return replyThenDelete(ctx, `❌ The rain starter ran out of funds — this rain is over.`, opts);
+        }
 
         const uWallet = getUserWallet(userId);
         let txID;
         try {
-          const fclient = new SikkaClient({ nodeURL: selectedNodeURL, wallet });
-          const result = await fclient.send(claim.share, uWallet.address);
+          const starterClient = new SikkaClient({
+            nodeURL: selectedNodeURL,
+            wallet: getUserWallet(claim.starterId),
+          });
+          const result = await starterClient.send(claim.share, uWallet.address);
           txID = result.txID;
         } catch (sendErr) {
           await removeRainClaim(db, claim.rainId, userId);
+          // If the starter ran out mid-send, no remaining drop can be paid
+          // either — close the rain (unclaimed shares stay in their wallet).
+          if (/insufficient balance|balance too low/i.test(sendErr.message || '')) {
+            await closeRain(db, claim.rainId);
+            bot.telegram.sendMessage(telegramGroup, `🌧 **Rain over — starter ran out of funds.**`, { parse_mode: 'Markdown' })
+              .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
+              .catch(console.error);
+          }
           return replyThenDelete(ctx, humanizeSendError(sendErr), { parse_mode: 'Markdown', ...opts });
         }
         await addRainClaimTx(db, claim.rainId, userId, txID);
