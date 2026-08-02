@@ -41,6 +41,29 @@ export async function initDB(dbPath) {
       telegram_user_id TEXT    PRIMARY KEY,
       created_at       INTEGER NOT NULL
     );
+
+    -- One row per rain; single active rain enforced in code via getActiveRain
+    CREATE TABLE IF NOT EXISTS rains (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      total_amount TEXT    NOT NULL,
+      persons      INTEGER NOT NULL,
+      status       TEXT    NOT NULL DEFAULT 'active',
+      starter_id   TEXT    NOT NULL,
+      started_at   INTEGER NOT NULL,
+      closed_at    INTEGER
+    );
+    -- getActiveRain runs every 5 s — index keeps it O(log n)
+    CREATE INDEX IF NOT EXISTS idx_rains_status ON rains(status);
+
+    -- One drop per user per rain (PK prevents double-claim)
+    CREATE TABLE IF NOT EXISTS rain_claims (
+      rain_id          INTEGER NOT NULL,
+      telegram_user_id TEXT    NOT NULL,
+      share            TEXT    NOT NULL,
+      tx_id            TEXT,
+      claimed_at       INTEGER NOT NULL,
+      PRIMARY KEY (rain_id, telegram_user_id)
+    );
   `);
 
   // Migrate existing DBs that predate the closed_at column — safe no-op on fresh DBs
@@ -167,6 +190,70 @@ export async function setRaffleTime(db, raffleId, endTimeSec) {
   await db.run(
     `UPDATE raffles SET end_time = ? WHERE id = ?`,
     [endTimeSec, raffleId]
+  );
+}
+
+// ─── Rain CRUD ───────────────────────────────────────────────────────────────
+
+export async function createRain(db, totalAmountStr, persons, starterId) {
+  const result = await db.run(
+    `INSERT INTO rains (total_amount, persons, status, starter_id, started_at) VALUES (?, ?, 'active', ?, ?)`,
+    [totalAmountStr, persons, String(starterId), Math.floor(Date.now() / 1000)]
+  );
+  return result.lastID;
+}
+
+export async function getActiveRain(db) {
+  return await db.get(`SELECT * FROM rains WHERE status = 'active' LIMIT 1`);
+}
+
+export async function hasUserClaimedRain(db, rainId, userId) {
+  const row = await db.get(
+    `SELECT 1 FROM rain_claims WHERE rain_id = ? AND telegram_user_id = ? LIMIT 1`,
+    [rainId, String(userId)]
+  );
+  return !!row;
+}
+
+export async function addRainClaim(db, rainId, userId, shareStr, txId) {
+  await db.run(
+    `INSERT INTO rain_claims (rain_id, telegram_user_id, share, tx_id, claimed_at) VALUES (?, ?, ?, ?, ?)`,
+    [rainId, String(userId), shareStr, txId, Math.floor(Date.now() / 1000)]
+  );
+}
+
+export async function addRainClaimTx(db, rainId, userId, txId) {
+  await db.run(
+    `UPDATE rain_claims SET tx_id = ? WHERE rain_id = ? AND telegram_user_id = ?`,
+    [txId, rainId, String(userId)]
+  );
+}
+
+export async function removeRainClaim(db, rainId, userId) {
+  await db.run(
+    `DELETE FROM rain_claims WHERE rain_id = ? AND telegram_user_id = ?`,
+    [rainId, String(userId)]
+  );
+}
+
+export async function getRainClaims(db, rainId) {
+  return await db.all(
+    `SELECT * FROM rain_claims WHERE rain_id = ? ORDER BY claimed_at ASC`,
+    [rainId]
+  );
+}
+
+export async function closeRain(db, rainId) {
+  await db.run(
+    `UPDATE rains SET status = 'closed', closed_at = ? WHERE id = ?`,
+    [Math.floor(Date.now() / 1000), rainId]
+  );
+}
+
+export async function cancelRain(db, rainId) {
+  await db.run(
+    `UPDATE rains SET status = 'cancelled', closed_at = ? WHERE id = ?`,
+    [Math.floor(Date.now() / 1000), rainId]
   );
 }
 
