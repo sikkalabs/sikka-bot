@@ -15,8 +15,12 @@ import { validateAddress, addressRe } from './address.js';
 import path from 'path';
 import crypto from 'crypto';
 
+// Auto-delete TTL for group messages (replies & announcements). Telegram allows
+// deleting messages up to 48h after sending — 5 min keeps the group tidy.
+const GROUP_MSG_TTL_SEC = 300;
+
 // Helper: delete a message after delaySec if it's in a group chat (never delete in private DM chats)
-function deleteLater(telegram, chatId, messageId, delaySec = 60) {
+function deleteLater(telegram, chatId, messageId, delaySec = GROUP_MSG_TTL_SEC) {
   if (!chatId || !messageId) return;
   if (typeof chatId === 'number' && chatId > 0) return;
   if (typeof chatId === 'string' && !chatId.startsWith('-')) return;
@@ -27,7 +31,7 @@ function deleteLater(telegram, chatId, messageId, delaySec = 60) {
 }
 
 // Helper: send a reply then delete both the trigger and the reply after `delaySec` seconds in group chats. Never delete in one-on-one (private) chats.
-async function replyThenDelete(ctx, text, opts = {}, delaySec = 60) {
+async function replyThenDelete(ctx, text, opts = {}, delaySec = GROUP_MSG_TTL_SEC) {
   const reply = await ctx.reply(text, opts);
   if (ctx.chat?.type === 'private') {
     return reply;
@@ -621,7 +625,7 @@ async function main() {
         `👉 /join@sikkalabsbot to enter!`;
       const prizeMsg = await bot.telegram.sendMessage(telegramGroup, prizeText, { parse_mode: 'Markdown' });
       lastPrizeMsgId = prizeMsg.message_id;
-      deleteLater(bot.telegram, telegramGroup, prizeMsg.message_id, 60);
+      deleteLater(bot.telegram, telegramGroup, prizeMsg.message_id, GROUP_MSG_TTL_SEC);
     } catch (err) {
       console.error(err);
       replyThenDelete(ctx, `Error: ${err.message}`, replyOpts);
@@ -694,7 +698,7 @@ async function main() {
 
       if (newCount === 1) {
         // Still waiting for a second player — no timer yet
-        await replyThenDelete(ctx, `✅ You joined the raffle!\nWaiting for 1 more player to start the timer.\nTx: ${txID}`, replyOpts, 60);
+        await replyThenDelete(ctx, `✅ You joined the raffle!\nWaiting for 1 more player to start the timer.\nTx: ${txID}`, replyOpts, GROUP_MSG_TTL_SEC);
       } else {
         // 2nd player or beyond — always reset clock to exactly 2 mins from now
         const newEndTime = nowAfter + 120;
@@ -704,7 +708,7 @@ async function main() {
           ? `✅ You joined the raffle!\n\n⏳ Timer started — 2 minutes remaining!\nTx: ${txID}`
           : `✅ You joined the raffle!\n\n⏳ Timer reset — 2 minutes remaining!\nTx: ${txID}`;
 
-        await replyThenDelete(ctx, msg, { parse_mode: 'Markdown', ...replyOpts }, 60);
+        await replyThenDelete(ctx, msg, { parse_mode: 'Markdown', ...replyOpts }, GROUP_MSG_TTL_SEC);
       }
     } catch (err) {
       console.error(err);
@@ -1006,7 +1010,7 @@ async function main() {
 
         const announceMsg = `🎉 **RAFFLE ENDED!** 🎉\n\nWinner: [${winnerName}](tg://user?id=${winnerId})\nPrize: ${formatSikkaDisplay(prize)}!\n\nSending funds...`;
         const sentMsg = await bot.telegram.sendMessage(telegramGroup, announceMsg, { parse_mode: 'Markdown' }).catch(console.error);
-        if (sentMsg) deleteLater(bot.telegram, telegramGroup, sentMsg.message_id, 60);
+        if (sentMsg) deleteLater(bot.telegram, telegramGroup, sentMsg.message_id, GROUP_MSG_TTL_SEC);
 
         try {
           const winnerWallet = getUserWallet(winnerId);
@@ -1014,10 +1018,10 @@ async function main() {
           const { txID } = await fclient.send(prize, winnerWallet.address);
           // Fix #7: guard against sentMsg being undefined if the announce message failed
           const replyParams = sentMsg ? { reply_parameters: { message_id: sentMsg.message_id } } : {};
-          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\n\n🤫 Winner — DM @sikkalabsbot and type /balance to check your funds privately!`, { parse_mode: 'Markdown', ...replyParams }).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, 60)).catch(console.error);
+          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\n\n🤫 Winner — DM @sikkalabsbot and type /balance to check your funds privately!`, { parse_mode: 'Markdown', ...replyParams }).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC)).catch(console.error);
         } catch (e) {
           console.error("Failed to send prize:", e);
-          bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, 60)).catch(console.error);
+          bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC)).catch(console.error);
         }
       }
     } catch (e) {
@@ -1130,7 +1134,7 @@ async function main() {
           ? `↩️ Leftover returned to starter: ${formatSikkaDisplay(leftover)}${leftoverTx ? `\nTx: \`${leftoverTx}\`` : ''}\n`
           : '');
       bot.telegram.sendMessage(telegramGroup, msg, { parse_mode: 'Markdown' })
-        .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, 60))
+        .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
         .catch(console.error);
 
       if (leftover > 0n && !leftoverTx) {
@@ -1328,7 +1332,7 @@ async function main() {
       try {
         await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '❌' }]);
       } catch (e) {}
-      // Auto-delete settling-period and similar transient error messages after 30s
+      // Auto-delete settling-period and similar transient error messages using the group TTL (replyThenDelete default)
       await replyThenDelete(
         ctx,
         `Sorry, could not process the airdrop: ${humanizeSendError(err)}`,
