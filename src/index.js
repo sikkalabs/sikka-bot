@@ -217,7 +217,7 @@ async function main() {
       `<b>┌─ 🌧 Rain ────────────────────┐</b>\n` +
       `  <code>/rain &lt;amount&gt; [&lt;persons&gt;]</code>\n` +
       `  Drop SIKKA — first to /me grabs a share\n` +
-      `  <i>  default 3 drops · halves each time · min drop 0.01</i>\n\n` +
+      `  <i>  default 10 drops · halves each time · min drop 0.01</i>\n\n` +
 
       `<b>──────────────────────────────</b>\n` +
       `👛 <i>DM @sikkalabsbot for wallet commands</i>\n\n` +
@@ -859,7 +859,7 @@ async function main() {
         );
       }
 
-      let persons = 3;
+      let persons = 10;
       if (args.length === 2) {
         const n = parseInt(args[1], 10);
         if (!Number.isInteger(n) || n < 1) {
