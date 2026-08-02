@@ -1400,9 +1400,12 @@ async function main() {
     const adder = ctx.message.from;
     const newMembers = ctx.message.new_chat_members || [];
     if (!adder || newMembers.length === 0) return;
+    // Only reward a real user adder — never bots, anonymous admins (sender_chat
+    // is set), or channels. A bot/chat has no wallet worth tipping.
+    if (adder.is_bot || ctx.message.sender_chat) return;
     // Only reward when the adder added someone else (not joining themselves)
     if (newMembers.some(m => m.id === adder.id)) return;
-    // Skip bot accounts being added (including this bot)
+    // Skip if any added member is a bot (including this bot being added)
     if (newMembers.some(m => m.is_bot)) return;
 
     const now = Date.now();
