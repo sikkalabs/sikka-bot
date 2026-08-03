@@ -13,7 +13,7 @@ import {
   getBatteryPercent,
 } from './sikka_client.js';
 import { validateAddress, addressRe } from './address.js';
-import { getSikkaEthPrice, formatFiat } from './price.js';
+import { getSikkaEthPrice, formatFiat, SIKKA_ETH_TOKEN } from './price.js';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -302,14 +302,21 @@ async function main() {
       const p = await getSikkaEthPrice();
       const ageMin = Math.floor((Date.now() - p.fetchedAt) / 60000);
       const cacheNote = ageMin <= 0 ? 'just now' : `${ageMin}m ago`;
+      const matchaUrl = `https://matcha.xyz/tokens/ethereum/${SIKKA_ETH_TOKEN}`;
       const text =
-        `📈 <b>$SIKKA</b> <i>(ETH)</i>\n\n` +
+        `📈 <b>$SIKKA</b>\n\n` +
         `🇺🇸 <b>USD</b>  $${formatFiat(p.usd)}\n` +
         `🇮🇳 <b>INR</b>  ₹${formatFiat(p.inr)}\n` +
         `🇦🇪 <b>AED</b>  د.إ${formatFiat(p.aed)}\n` +
         `🇹🇭 <b>THB</b>  ฿${formatFiat(p.thb)}\n\n` +
+        `<b>token address</b>\n` +
+        `<code>${SIKKA_ETH_TOKEN}</code>\n\n` +
+        `<a href="${matchaUrl}">Trade on Matcha</a>\n` +
         `<i>Cached ${cacheNote} · refreshes every 10 min</i>`;
-      await replyThenDelete(ctx, text, replyOpts);
+      await replyThenDelete(ctx, text, {
+        ...replyOpts,
+        link_preview_options: { is_disabled: true },
+      });
     } catch (err) {
       await replyThenDelete(ctx, `❌ Could not fetch price: ${err.message}`, replyOpts);
     }
