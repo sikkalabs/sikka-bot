@@ -13,6 +13,7 @@ import {
   getBatteryPercent,
 } from './sikka_client.js';
 import { validateAddress, addressRe } from './address.js';
+import { getSikkaEthPrice, formatFiat } from './price.js';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -252,6 +253,9 @@ async function main() {
       `  Drop SIKKA — first to /me grabs a share\n` +
       `  <i>  default 10 drops · halves each time · min drop 0.01</i>\n\n` +
 
+      `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
+      `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB\n\n` +
+
       `<b>──────────────────────────────</b>\n` +
       `👛 <i>DM @sikkalabsbot for wallet commands</i>\n\n` +
       `🌐 <a href="https://sikkalabs.com/">sikkalabs.com</a>`
@@ -287,6 +291,28 @@ async function main() {
       '```\n' + tweet + '\n```\n\n' +
       `🔍 [See recent tweets](${TWEET_SEARCH_URL})`;
     replyThenDelete(ctx, text, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+  });
+
+  // /price — ETH-mainnet $SIKKA spot (Uniswap V4), cached 10 min.
+  bot.command('price', async (ctx) => {
+    const isPrivate = ctx.chat.type === 'private';
+    if (!isPrivate && String(ctx.chat.id) !== telegramGroup) return;
+    const replyOpts = { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'HTML' };
+    try {
+      const p = await getSikkaEthPrice();
+      const ageMin = Math.floor((Date.now() - p.fetchedAt) / 60000);
+      const cacheNote = ageMin <= 0 ? 'just now' : `${ageMin}m ago`;
+      const text =
+        `📈 <b>$SIKKA</b> <i>(ETH)</i>\n\n` +
+        `🇺🇸 <b>USD</b>  $${formatFiat(p.usd)}\n` +
+        `🇮🇳 <b>INR</b>  ₹${formatFiat(p.inr)}\n` +
+        `🇦🇪 <b>AED</b>  د.إ${formatFiat(p.aed)}\n` +
+        `🇹🇭 <b>THB</b>  ฿${formatFiat(p.thb)}\n\n` +
+        `<i>Cached ${cacheNote} · refreshes every 10 min</i>`;
+      await replyThenDelete(ctx, text, replyOpts);
+    } catch (err) {
+      await replyThenDelete(ctx, `❌ Could not fetch price: ${err.message}`, replyOpts);
+    }
   });
 
 
