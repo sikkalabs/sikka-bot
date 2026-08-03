@@ -15,6 +15,7 @@ import {
 import { validateAddress, addressRe } from './address.js';
 import path from 'path';
 import crypto from 'crypto';
+import fs from 'fs';
 
 // Auto-delete TTL for group messages (replies & announcements). Telegram allows
 // deleting messages up to 48h after sending — 5 min keeps the group tidy.
@@ -264,6 +265,30 @@ async function main() {
     replyThenDelete(ctx, helpText(isPrivate), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
   });
 
+  // /x & /tweet — random tweet from tweets.txt in a copy-paste code block,
+  // plus a link to live $SIKKA tweets on X.
+  const TWEETS_PATH = path.join(process.cwd(), 'tweets.txt');
+  const TWEET_SEARCH_URL = 'https://x.com/search?q=%24SIKKA&src=typed_query&f=live';
+
+  function randomTweet() {
+    const lines = fs.readFileSync(TWEETS_PATH, 'utf8').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) return null;
+    return lines[crypto.randomInt(lines.length)];
+  }
+
+  bot.command(['x', 'tweet'], (ctx) => {
+    if (String(ctx.chat.id) !== telegramGroup) return;
+    const tweet = randomTweet();
+    if (!tweet) {
+      return replyThenDelete(ctx, 'No tweets found in tweets.txt.', { reply_parameters: { message_id: ctx.message.message_id } });
+    }
+    const text =
+      `🐦 *Random #SIKKA tweet*\n\n` +
+      '```\n' + tweet + '\n```\n\n' +
+      `🔍 [See recent tweets](${TWEET_SEARCH_URL})`;
+    replyThenDelete(ctx, text, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+  });
+
 
   // /claim — faucet command using the bot wallet.
   // Usage: /claim            → sends to the user's personal wallet
@@ -362,6 +387,31 @@ async function main() {
       const batteryIcon = getBatteryIcon(pct);
       await ctx.reply(
         `Your balance: *${formatSikkaDisplay(bal)}*\nBattery: *${batteryIcon} ${pct}%*\n\nAddress:\n\`${uWallet.address}\`\n\n[Open wallet UI](${selectedNodeURL}/wallet.html)`,
+        { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
+      );
+    } catch (err) {
+      await ctx.reply(`Error: ${err.message}`);
+    }
+  });
+
+  // /my — your address, balance, battery and a link to your address page.
+  // Works anywhere (group or DM): everything shown belongs to the sender.
+  bot.command('my', async (ctx) => {
+    try {
+      const uWallet = getUserWallet(ctx.from.id);
+      const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
+      const account = await client.account();
+      const bal = asBig(account.balance);
+      const pct = getBatteryPercent(account);
+      const batteryIcon = getBatteryIcon(pct);
+      const addrLink = `https://2.sikkalabs.com/address.html?a=${uWallet.address}`;
+      await replyThenDelete(
+        ctx,
+        `👤 *Your wallet*\n\n` +
+        `Balance: *${formatSikkaDisplay(bal)}*\n` +
+        `Battery: *${batteryIcon} ${pct}%*\n\n` +
+        `Address:\n\`${uWallet.address}\`\n\n` +
+        `[View on explorer](${addrLink})`,
         { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } }
       );
     } catch (err) {
