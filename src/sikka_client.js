@@ -85,6 +85,17 @@ export function formatSikka(chillar) {
   return `${sign}${whole}.${frac.toString().padStart(9, '0').replace(/0+$/, '')}`;
 }
 
+export function getBatteryPercent(account, maxBattery = 100) {
+  const batteryNow = account?.battery_now ?? account?.battery ?? account?.credits_now ?? account?.credits ?? 0;
+  const batteryMax = account?.battery_max ?? account?.max_battery ?? account?.credits_max ?? account?.max_credits ?? maxBattery;
+  const current = Number(batteryNow);
+  const max = Number(batteryMax);
+  if (!Number.isFinite(current) || !Number.isFinite(max) || max <= 0) {
+    return 0;
+  }
+  return Math.min(100, Math.max(0, Math.round((current / max) * 100)));
+}
+
 /** Parse a decimal SIKKA amount into CHILLAR (max 9 fractional digits). */
 export function parseSikka(input) {
   const text = String(input).trim();
@@ -269,10 +280,11 @@ export class SikkaClient {
     if (bal < amountBI) {
       throw new Error(`insufficient balance: have ${bal} chillar, need ${amountBI} chillar`);
     }
-    const credits = Number(account.credits_now ?? account.credits ?? 0);
-    if (credits < 1) {
+    const batteryNow = account.battery_now ?? account.battery ?? account.credits_now ?? account.credits ?? 0;
+    const battery = Number(batteryNow);
+    if (battery < 1) {
       throw new Error(
-        `insufficient credits for ${this.wallet.address}: has ${credits}, needs 1`
+        `insufficient battery for ${this.wallet.address}: has ${battery}, needs 1`
       );
     }
 

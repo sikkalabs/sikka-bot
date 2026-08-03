@@ -10,6 +10,7 @@ import {
   parseSikka,
   CHILLAR_PER_SIKKA,
   asBig,
+  getBatteryPercent,
 } from './sikka_client.js';
 import { validateAddress, addressRe } from './address.js';
 import path from 'path';
@@ -357,9 +358,7 @@ async function main() {
       const client = new SikkaClient({ nodeURL: selectedNodeURL, wallet: uWallet });
       const account = await client.account();
       const bal = asBig(account.balance);
-      const credits = account.credits_now ?? account.credits ?? 0;
-      const maxCredits = account.credits_max ?? account.max_credits ?? 100;
-      const pct = Math.min(100, Math.max(0, Math.round((Number(credits) / Number(maxCredits)) * 100)));
+      const pct = getBatteryPercent(account);
       const batteryIcon = getBatteryIcon(pct);
       await ctx.reply(
         `Your balance: *${formatSikkaDisplay(bal)}*\nBattery: *${batteryIcon} ${pct}%*\n\nAddress:\n\`${uWallet.address}\`\n\n[Open wallet UI](${selectedNodeURL}/wallet.html)`,

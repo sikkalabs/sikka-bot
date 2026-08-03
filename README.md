@@ -45,5 +45,19 @@ npm start
 docker compose --env-file .env up -d --build
 ```
 
+Test with Podman
+----------------
+
+```bash
+podman build -t sikka-bot-test:local .
+podman run --rm sikka-bot-test:local npm run test:unit
+```
+
+The helper script also runs the same test flow:
+
+```bash
+bash scripts/test.sh
+```
+
 Addresses are `0x` + 64 hex (`SHA3-256` of the ML-DSA-87 public key).
 Amounts are SIKKA with up to 9 decimals (`1 SIKKA = 10⁹ CHILLAR`).
