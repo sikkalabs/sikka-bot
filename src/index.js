@@ -171,6 +171,12 @@ async function main() {
   
   const bot = new Telegraf(telegramToken);
 
+  // Fetch the bot's own username at startup (no @ prefix) so we never hardcode
+  // it in messages — works for @sikkawalletbot, @sikkalabsbot, etc.
+  const botMe = await bot.telegram.getMe();
+  const botUsername = botMe.username;
+  console.log(`Bot username: @${botUsername}`);
+
   // Normalise command case — Telegram sends the command text verbatim, so
   // /Claim would not match bot.command('claim'). Lowercase just the command
   // token (preserving any @botname and overall length so entity offsets stay valid).
@@ -257,7 +263,7 @@ async function main() {
       `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB\n\n` +
 
       `<b>──────────────────────────────</b>\n` +
-      `👛 <i>DM @sikkalabsbot for wallet commands</i>\n\n` +
+      `👛 <i>DM @${botUsername} for wallet commands</i>\n\n` +
       `🌐 <a href="https://sikkalabs.com/">sikkalabs.com</a>`
     );
   }
@@ -397,7 +403,7 @@ async function main() {
 
   bot.command('deposit', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot and type /deposit to get your deposit address.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @${botUsername} and type /deposit to get your deposit address.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     try {
       const uWallet = getUserWallet(ctx.from.id);
@@ -409,7 +415,7 @@ async function main() {
 
   bot.command('balance', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot and type /balance to check your balance.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @${botUsername} and type /balance to check your balance.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     try {
       const uWallet = getUserWallet(ctx.from.id);
@@ -493,7 +499,7 @@ async function main() {
 
   bot.command('send', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @${botUsername} to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 2) {
@@ -504,7 +510,7 @@ async function main() {
 
   bot.command('sendall', async (ctx) => {
     if (ctx.chat.type !== 'private') {
-      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @sikkalabsbot to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
+      return replyThenDelete(ctx, `🔒 Wallet commands are private! DM @${botUsername} to send funds.`, { reply_parameters: { message_id: ctx.message.message_id } });
     }
     const args = ctx.message.text.split(/\s+/).slice(1);
     if (args.length !== 1) {
@@ -641,7 +647,7 @@ async function main() {
           `💰 Pool: ${formatSikkaDisplay(totalPool)}\n` +
           `🎁 Prize (−5%): ${formatSikkaDisplay(prize)}\n\n` +
           `⏳ **${timeText}**\n\n` +
-          `👉 /join@sikkalabsbot to enter!`;
+          `👉 /join@${botUsername} to enter!`;
 
         const sent = await replyThenDelete(ctx, text, { parse_mode: 'Markdown' });
         lastPrizeMsgId = sent.message_id;
@@ -735,7 +741,7 @@ async function main() {
         `💰 Total Pool: ${formatSikkaDisplay(initialPool)}\n` +
         `🎁 Prize (Minus 5%): ${formatSikkaDisplay(initialPrize)}\n\n` +
         `⏳ Time Left: **Waiting for 1 more player to start...**\n\n` +
-        `👉 /join@sikkalabsbot to enter!`;
+        `👉 /join@${botUsername} to enter!`;
       const prizeMsg = await bot.telegram.sendMessage(telegramGroup, prizeText, { parse_mode: 'Markdown' });
       lastPrizeMsgId = prizeMsg.message_id;
       deleteLater(bot.telegram, telegramGroup, prizeMsg.message_id, GROUP_MSG_TTL_SEC);
@@ -1123,7 +1129,7 @@ async function main() {
           const { txID } = await fclient.send(prize, winnerWallet.address);
           // Fix #7: guard against sentMsg being undefined if the announce message failed
           const replyParams = sentMsg ? { reply_parameters: { message_id: sentMsg.message_id } } : {};
-          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\n\n🤫 Winner — DM @sikkalabsbot and type /balance to check your funds privately!`, { parse_mode: 'Markdown', ...replyParams }).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC)).catch(console.error);
+          bot.telegram.sendMessage(telegramGroup, `✅ Prize sent to winner's wallet!\nTx: \`${txID}\`\n\n🤫 Winner — DM @${botUsername} and type /balance to check your funds privately!`, { parse_mode: 'Markdown', ...replyParams }).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC)).catch(console.error);
         } catch (e) {
           console.error("Failed to send prize:", e);
           bot.telegram.sendMessage(telegramGroup, `❌ Error sending prize: ${e.message}`).then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC)).catch(console.error);
@@ -1179,7 +1185,7 @@ async function main() {
         `💰 Total Pool: ${formatSikkaDisplay(totalPool)}\n` +
         `🎁 Prize (Minus 5%): ${formatSikkaDisplay(prize)}\n\n` +
         `⏳ Time Left: **${timeText}**\n\n` +
-        `👉 /join@sikkalabsbot to enter!`;
+        `👉 /join@${botUsername} to enter!`;
 
       await bot.telegram.editMessageText(
         telegramGroup, lastPrizeMsgId, undefined,
