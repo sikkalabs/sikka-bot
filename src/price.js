@@ -98,11 +98,11 @@ async function fetchEthUsd() {
 async function fetchUsdFx() {
   const j = await fetchJson('https://open.er-api.com/v6/latest/USD');
   if (j.result !== 'success' || !j.rates) throw new Error('could not fetch FX rates');
-  const { INR, AED, THB } = j.rates;
-  if (![INR, AED, THB].every((x) => Number.isFinite(Number(x)) && Number(x) > 0)) {
-    throw new Error('FX rates missing INR/AED/THB');
+  const { INR, AED, THB, CNY } = j.rates;
+  if (![INR, AED, THB, CNY].every((x) => Number.isFinite(Number(x)) && Number(x) > 0)) {
+    throw new Error('FX rates missing INR/AED/THB/CNY');
   }
-  return { INR: Number(INR), AED: Number(AED), THB: Number(THB) };
+  return { INR: Number(INR), AED: Number(AED), THB: Number(THB), CNY: Number(CNY) };
 }
 
 async function fetchFreshPrice() {
@@ -122,13 +122,14 @@ async function fetchFreshPrice() {
     inr: usd * fx.INR,
     aed: usd * fx.AED,
     thb: usd * fx.THB,
+    cny: usd * fx.CNY,
     eth,
     ethUsd,
     fetchedAt: Date.now(),
   };
 }
 
-/** Spot price of ETH-mainnet SIKKA in USD / INR / AED / THB. Cached 10 minutes. */
+/** Spot price of ETH-mainnet SIKKA in USD / INR / AED / THB / CNY. Cached 10 minutes. */
 export async function getSikkaEthPrice() {
   const now = Date.now();
   if (cache && cache.expiresAt > now) return cache.value;

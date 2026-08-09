@@ -259,7 +259,7 @@ async function main() {
       `  <i>  default 10 drops · halves each time · min drop 0.01</i>\n\n` +
 
       `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
-      `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB\n\n` +
+      `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n\n` +
 
       `<b>──────────────────────────────</b>\n` +
       `👛 <i>DM @${botUsername} for wallet commands</i>\n\n` +
@@ -300,7 +300,8 @@ async function main() {
         `🇺🇸 <b>USD</b>  $${formatFiat(p.usd)}\n` +
         `🇮🇳 <b>INR</b>  ₹${formatFiat(p.inr)}\n` +
         `🇦🇪 <b>AED</b>  د.إ${formatFiat(p.aed)}\n` +
-        `🇹🇭 <b>THB</b>  ฿${formatFiat(p.thb)}\n\n` +
+        `🇹🇭 <b>THB</b>  ฿${formatFiat(p.thb)}\n` +
+        `🇨🇳 <b>CNY</b>  ¥${formatFiat(p.cny)}\n\n` +
         `<b>token address</b>\n` +
         `<code>${SIKKA_ETH_TOKEN}</code>\n\n` +
         `<a href="${matchaUrl}">Trade on Matcha</a>\n` +
