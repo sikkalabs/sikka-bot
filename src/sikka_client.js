@@ -12,8 +12,9 @@ export const PK_LEN = 2592;
 export const SIG_LEN = 4627;
 export const CHILLAR_PER_SIKKA = 1_000_000_000n;
 
-const TX_SIGNING_TAG = new TextEncoder().encode('SIKKA/tx/v3');
+const TX_SIGNING_TAG = new TextEncoder().encode('SIKKA/tx/v1');
 const SIGNING_CONTEXT = new TextEncoder().encode('SIKKA-v1');
+export const MAX_BATTERY = 10;
 
 export function hex(bytes) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
@@ -85,7 +86,7 @@ export function formatSikka(chillar) {
   return `${sign}${whole}.${frac.toString().padStart(9, '0').replace(/0+$/, '')}`;
 }
 
-export function getBatteryPercent(account, maxBattery = 100) {
+export function getBatteryPercent(account, maxBattery = MAX_BATTERY) {
   const batteryNow = account?.battery_now ?? account?.battery ?? account?.credits_now ?? account?.credits ?? 0;
   const batteryMax = account?.battery_max ?? account?.max_battery ?? account?.credits_max ?? account?.max_credits ?? maxBattery;
   const current = Number(batteryNow);
@@ -112,10 +113,11 @@ export function parseSikka(input) {
   return whole * CHILLAR_PER_SIKKA + frac;
 }
 
-// Matches Transaction::signing_bytes (v3):
-// tag || str(chain_id) || kind || from || to || amount || nonce || timestamp || public_key
+// Matches Transaction::signing_bytes (v1):
+// tag || str(chain_id) || genesis_fingerprint || kind || from || to || amount || nonce || timestamp || public_key
 export function signingBytes({
   chainId,
+  genesisFingerprint,
   kind,
   from,
   to,
@@ -127,6 +129,9 @@ export function signingBytes({
   if (typeof chainId !== 'string' || !chainId) {
     throw new Error('chain_id required for signing');
   }
+  if (!(genesisFingerprint instanceof Uint8Array) || genesisFingerprint.length !== 32) {
+    throw new Error('genesis_fingerprint must be 32 raw bytes');
+  }
   if (from.length !== 32 || to.length !== 32) {
     throw new Error('from/to must be 32 raw address bytes');
   }
@@ -136,6 +141,7 @@ export function signingBytes({
   return concat(
     TX_SIGNING_TAG,
     encodeStr(chainId),
+    genesisFingerprint,
     Uint8Array.of(kind),
     from,
     to,
@@ -193,6 +199,9 @@ export class SikkaClient {
       this.nodeURL = (opts.nodeURL || 'http://127.0.0.1:64552').replace(/\/$/, '');
       this.wallet = opts.wallet;
       if (opts.chainId) this.chainId = opts.chainId;
+      if (opts.genesisFingerprint instanceof Uint8Array) {
+        this.genesisFingerprint = opts.genesisFingerprint;
+      }
     }
   }
 
@@ -206,28 +215,55 @@ export class SikkaClient {
     return asBig(info.balance);
   }
 
-  /** Fetch and cache `chain.info.chain_id` (exact string used in signatures). */
-  async ensureChainId() {
-    if (typeof this.chainId === 'string' && this.chainId) return this.chainId;
+  /**
+   * Fetch and cache `chain.info` bindings used in signatures:
+   * `chain_id` + `genesis_fingerprint`.
+   */
+  async ensureChainBinding() {
+    if (
+      typeof this.chainId === 'string' &&
+      this.chainId &&
+      this.genesisFingerprint instanceof Uint8Array &&
+      this.genesisFingerprint.length === 32
+    ) {
+      return { chainId: this.chainId, genesisFingerprint: this.genesisFingerprint };
+    }
     const info = await rpc(this.nodeURL, 'chain.info');
     if (typeof info.chain_id !== 'string' || !info.chain_id) {
       throw new Error('node did not return chain_id');
     }
+    if (typeof info.genesis_fingerprint !== 'string' || !info.genesis_fingerprint) {
+      throw new Error('node did not return genesis_fingerprint');
+    }
+    const genesisFingerprint = unhex(info.genesis_fingerprint);
+    if (genesisFingerprint.length !== 32) {
+      throw new Error('genesis_fingerprint must be 32 bytes');
+    }
     this.chainId = info.chain_id;
-    return this.chainId;
+    this.genesisFingerprint = genesisFingerprint;
+    return { chainId: this.chainId, genesisFingerprint: this.genesisFingerprint };
+  }
+
+  /** @deprecated use ensureChainBinding */
+  async ensureChainId() {
+    const { chainId } = await this.ensureChainBinding();
+    return chainId;
   }
 
   /**
-   * Sign a transfer for `chainId` (must match the target node's `chain.info`).
+   * Sign a transfer for the target node's chain binding.
    * @param {string} toHex
    * @param {bigint|number|string} amountChillar
    * @param {bigint|number|string} nonce
-   * @param {string} chainId
+   * @param {{ chainId: string, genesisFingerprint: Uint8Array }} binding
    */
-  signTransfer(toHex, amountChillar, nonce, chainId) {
+  signTransfer(toHex, amountChillar, nonce, binding) {
     if (!this.wallet) throw new Error('wallet required');
-    if (typeof chainId !== 'string' || !chainId) {
+    if (!binding || typeof binding.chainId !== 'string' || !binding.chainId) {
       throw new Error('chain_id required for signing');
+    }
+    if (!(binding.genesisFingerprint instanceof Uint8Array) || binding.genesisFingerprint.length !== 32) {
+      throw new Error('genesis_fingerprint must be 32 raw bytes');
     }
     const toNorm = validateAddress(toHex);
     const from = unhex(this.wallet.address);
@@ -238,7 +274,8 @@ export class SikkaClient {
     const amount = asBig(amountChillar);
     if (amount <= 0n) throw new Error('amount must be positive');
     const msg = signingBytes({
-      chainId,
+      chainId: binding.chainId,
+      genesisFingerprint: binding.genesisFingerprint,
       kind: 0,
       from,
       to,
@@ -260,7 +297,8 @@ export class SikkaClient {
       amount,
       nonce: asBig(nonce),
       timestamp,
-      chain_id: chainId,
+      chain_id: binding.chainId,
+      genesis_fingerprint: `0x${hex(binding.genesisFingerprint)}`,
       public_key: this.wallet.publicKeyHex,
       signature: hex(signature),
     };
@@ -288,9 +326,9 @@ export class SikkaClient {
       );
     }
 
-    const chainId = await this.ensureChainId();
+    const binding = await this.ensureChainBinding();
     const nonce = asBig(account.next_nonce);
-    const tx = this.signTransfer(recipientAddress, amountBI, nonce, chainId);
+    const tx = this.signTransfer(recipientAddress, amountBI, nonce, binding);
     const receipt = await rpc(this.nodeURL, 'tx.submit', { transaction: tx });
     return {
       txID: receipt.id,

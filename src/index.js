@@ -58,9 +58,9 @@ const airdropDivisor = 2000n;
 const MIN_RAIN_SHARE = 10_000_000n; // 0.01 SIKKA — smallest drop we pay out
 // Rain pays every drop DIRECTLY from the starter's wallet to the claimant
 // (same as /tip), so the bot wallet's battery is never touched. Each drop still
-// burns ~1 credit from the starter's wallet (pool maxes at 100), so cap the
-// number of drops at 80 to keep a single rain within the starter's battery.
-const MAX_RAIN_PAYOUTS = 80;
+// burns 1 battery from the starter's wallet (pool maxes at 10), so cap the
+// number of drops at 8 to keep a single rain within the starter's battery.
+const MAX_RAIN_PAYOUTS = 8;
 const RAIN_TIMEOUT_SEC = 5 * 60; // rain auto-closes after 5 min if not fully claimed
 
 // Ordinal suffix for rain drop numbering: 1st, 2nd, 3rd, 4th, ...

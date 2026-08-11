@@ -11,11 +11,11 @@ describe('createWallet', () => {
 });
 
 describe('getBatteryPercent', () => {
-  it('reads the new battery_now field', () => {
-    assert.equal(getBatteryPercent({ battery_now: 80 }), 80);
+  it('reads the battery_now field against the default max of 10', () => {
+    assert.equal(getBatteryPercent({ battery_now: 8 }), 80);
   });
 
   it('falls back to legacy credits fields', () => {
-    assert.equal(getBatteryPercent({ credits_now: 50, credits_max: 100 }), 50);
+    assert.equal(getBatteryPercent({ credits_now: 5, credits_max: 10 }), 50);
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Offline smoke: keygen, address shape, v3 signing payload layout.
+ * Offline smoke: keygen, address shape, v1 signing payload layout.
  * With SMOKE_NODE set, also hits chain.info + account.get.
  */
 import { createHash } from 'crypto';
@@ -37,8 +37,10 @@ if (parseSikka('1.5') !== (CHILLAR_PER_SIKKA * 3n) / 2n) {
     '0x' + createHash('sha3-256').update(Buffer.from(publicKey)).digest('hex');
   const from = unhex(fromHex);
   const to = new Uint8Array(32).fill(0x11);
+  const genesisFingerprint = new Uint8Array(32);
   const msg = signingBytes({
     chainId: 'sikka-test',
+    genesisFingerprint,
     kind: 0,
     from,
     to,
@@ -47,21 +49,31 @@ if (parseSikka('1.5') !== (CHILLAR_PER_SIKKA * 3n) / 2n) {
     timestamp: 1_720_000_000n,
     publicKey,
   });
-  if (msg.length !== 2706) throw new Error(`bad preimage length ${msg.length}`);
-  const prefix = hex(msg.slice(0, 26));
-  const expected = '53494b4b412f74782f76330a00000073696b6b612d7465737400';
+  if (msg.length !== 2738) throw new Error(`bad preimage length ${msg.length}`);
+  const prefix = hex(msg.slice(0, 58));
+  const expected =
+    '53494b4b412f74782f76310a00000073696b6b612d74657374' +
+    '00'.repeat(32) +
+    '00';
   if (prefix !== expected) {
-    throw new Error(`bad v3 prefix: ${prefix}`);
+    throw new Error(`bad v1 prefix: ${prefix}`);
   }
-  console.log('v3 preimage layout ok');
+  console.log('v1 preimage layout ok');
 }
 
 const other = createWallet('02'.repeat(32));
 const client = new SikkaClient({ nodeURL: 'http://example.invalid', wallet });
-const tx = client.signTransfer(other.address, 1n, 0n, 'sikka-test');
+const binding = {
+  chainId: 'sikka-test',
+  genesisFingerprint: new Uint8Array(32),
+};
+const tx = client.signTransfer(other.address, 1n, 0n, binding);
 if (tx.signature.length !== 4627 * 2) throw new Error('bad sig hex length');
 if (tx.public_key.length !== 2592 * 2) throw new Error('bad pk hex length');
 if (tx.chain_id !== 'sikka-test') throw new Error('missing chain_id on tx');
+if (!tx.genesis_fingerprint || unhex(tx.genesis_fingerprint).length !== 32) {
+  throw new Error('missing genesis_fingerprint on tx');
+}
 console.log('signed transfer ok');
 
 const node = process.env.SMOKE_NODE || process.env.SIKKANODE;
@@ -71,8 +83,13 @@ if (node) {
   const health = await getHealth(best);
   console.log('node', best, 'height', String(health.height), 'chain_id', health.chain_id);
   const live = new SikkaClient({ nodeURL: best, wallet });
-  const chainId = await live.ensureChainId();
-  console.log('rpc chain_id', chainId);
+  const liveBinding = await live.ensureChainBinding();
+  console.log(
+    'rpc chain_id',
+    liveBinding.chainId,
+    'genesis',
+    `0x${hex(liveBinding.genesisFingerprint)}`
+  );
   const account = await live.account();
   console.log('account.exists', account.exists, 'balance', String(account.balance));
 }

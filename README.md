@@ -7,8 +7,8 @@ Custodial faucet, wallets, tips, and raffles for the current SIKKA chain
 Matches the protocol documented in the main repo:
 [docs/wallets.md](https://github.com/sikkalabs/sikka/blob/main/docs/wallets.md)
 and the reference wallet at `/wallet.html`.
-Transfers are signed as **`SIKKA/tx/v3`** with the node’s `chain_id`
-(from `chain.info`), ML-DSA-87 context `SIKKA-v1`.
+Transfers are signed as **`SIKKA/tx/v1`** with the node’s `chain_id` and
+`genesis_fingerprint` (from `chain.info`), ML-DSA-87 context `SIKKA-v1`.
 
 How It Works
 ------------
@@ -19,7 +19,7 @@ How It Works
   address derived from `PRIVATEKEY` + Telegram user id.
 - **Tips / raffles** — group commands move funds between those custodial wallets.
 
-Each on-chain send burns **1% battery** (+1%/min, cap 100%).
+Each on-chain send burns **1 battery** (+1/min, cap 10).
 
 Environment Variables
 ---------------------
