@@ -104,6 +104,10 @@ function getBatteryIcon(pct) {
 function humanizeSendError(err) {
   const msg = err.message || '';
 
+  if (/faucet disabled to prevent spam/i.test(msg)) {
+    return `Faucet is disabled to prevent spam. Come back later.`;
+  }
+
   if (/insufficient credits|insufficient battery/i.test(msg)) {
     return `Not enough transaction battery. Please wait a minute and try again.`;
   }
@@ -130,13 +134,20 @@ function getUserWallet(userId) {
 
 async function sendAirdrop(nodeURL, wallet, recipientAddr) {
   const client = new SikkaClient({ nodeURL, wallet });
-  const balance = await client.balance();
-  
-  if (BigInt(balance) === 0n) {
+  const account = await client.account();
+  const batteryNow = Number(
+    account.battery_now ?? account.battery ?? account.credits_now ?? account.credits ?? 0
+  );
+  if (!Number.isFinite(batteryNow) || batteryNow < 2) {
+    throw new Error('faucet disabled to prevent spam');
+  }
+
+  const balance = asBig(account.balance);
+  if (balance === 0n) {
     throw new Error("faucet is empty");
   }
   
-  const amount = BigInt(balance) / airdropDivisor;
+  const amount = balance / airdropDivisor;
   if (amount < 1n) {
     throw new Error(`faucet balance too low to send (0.05% = ${amount} chillar)`);
   }
