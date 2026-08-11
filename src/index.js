@@ -430,7 +430,7 @@ async function main() {
       const bal = asBig(account.balance);
       const pct = getBatteryPercent(account);
       const batteryIcon = getBatteryIcon(pct);
-      const addrLink = `https://2.sikkalabs.com/address.html?a=${uWallet.address}`;
+      const addrLink = `https://1.sikkalabs.com/address.html?a=${uWallet.address}`;
       await replyThenDelete(
         ctx,
         `👤 *Your wallet*\n\n` +

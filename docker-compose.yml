@@ -8,7 +8,7 @@ services:
     volumes:
       - airdrop-data:/data
     environment:
-      - SIKKANODE=${SIKKANODE:-https://2.sikkalabs.com}
+      - SIKKANODE=${SIKKANODE:-https://1.sikkalabs.com}
       - PRIVATEKEY=${PRIVATEKEY}
       - TELEGRAMTOKEN=${TELEGRAMTOKEN}
       - TELEGRAMGROUP=${TELEGRAMGROUP}
