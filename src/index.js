@@ -12,7 +12,7 @@ import {
   asBig,
   getBatteryPercent,
 } from './sikka_client.js';
-import { validateAddress, addressRe } from './address.js';
+import { validateAddress } from './address.js';
 import { getSikkaEthPrice, formatFiat, SIKKA_ETH_TOKEN } from './price.js';
 import path from 'path';
 import crypto from 'crypto';
@@ -1240,7 +1240,6 @@ async function main() {
     }
   }, 5000);
 
-  const processingUsers = new Set();
   const joiningUsers = new Set(); // per-user lock for /join (Fix #1)
   const claimingRainUsers = new Set(); // per-user lock for /me rain claims
 
@@ -1391,83 +1390,7 @@ async function main() {
         const args = text.trim().split(/\s+/);
         const amountStr = args[args.length - 1];
         await handleTip(ctx, recipientId, recipientName, amountStr);
-        return; // Don't fall through to airdrop logic
       }
-    }
-
-    const matches = text.match(addressRe);
-    if (!matches || matches.length === 0) return;
-    
-    let recipientAddr;
-    for (const candidate of matches) {
-      try {
-        recipientAddr = validateAddress(candidate);
-        break;
-      } catch (err) {
-        // invalid
-      }
-    }
-    
-    if (!recipientAddr) return;
-    if (recipientAddr === wallet.address) return;
-    
-    const userId = ctx.from.id;
-    
-    if (processingUsers.has(userId)) {
-      return; // Skip concurrent buffered messages for the same user
-    }
-    processingUsers.add(userId);
-    
-    try {
-      const claimStatus = await canClaim(db, userId);
-      if (!claimStatus.ok) {
-        const remainingHours = Math.floor(claimStatus.remaining / (60 * 60 * 1000));
-        const remainingMins = Math.floor((claimStatus.remaining % (60 * 60 * 1000)) / (60 * 1000));
-        await replyThenDelete(
-          ctx,
-          `You already claimed recently. Try again in *${remainingHours}h ${remainingMins}m*.`,
-          { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' }
-        );
-        return;
-      }
-      
-      // Send a reaction to let the user know the bot is mining/processing
-      try {
-        await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '⏳' }]);
-      } catch (e) {
-        // ignore if reactions are disabled in the group
-      }
-      
-      const { txID, sentAmount } = await sendAirdrop(selectedNodeURL, wallet, recipientAddr);
-      
-      await recordClaim(db, userId);
-      
-      // Update reaction to success
-      try {
-        await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '🎉' }]);
-      } catch (e) {}
-      
-      await replyThenDelete(
-        ctx,
-        `Sent *${formatSikkaDisplay(sentAmount)}* to \`${recipientAddr}\`\nTx: \`${txID}\``,
-        { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' }
-      );
-      
-    } catch (err) {
-      console.error(`Airdrop error to ${recipientAddr}:`, err);
-      try {
-        await ctx.telegram.setMessageReaction(ctx.chat.id, ctx.message.message_id, [{ type: 'emoji', emoji: '❌' }]);
-      } catch (e) {}
-      // Auto-delete settling-period and similar transient error messages using the group TTL (replyThenDelete default)
-      await replyThenDelete(
-        ctx,
-        `Sorry, could not process the airdrop: ${humanizeSendError(err)}`,
-        { reply_parameters: { message_id: ctx.message.message_id }, parse_mode: 'Markdown' }
-      );
-      // Wait for 1s to avoid spamming if there's a flood
-      await new Promise(r => setTimeout(r, 1000));
-    } finally {
-      processingUsers.delete(userId);
     }
   });
 

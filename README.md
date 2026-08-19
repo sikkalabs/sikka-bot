@@ -12,9 +12,8 @@ Transfers are signed as **`SIKKA/tx/v1`** with the node’s `chain_id` and
 
 How It Works
 ------------
-- **Group faucet** — paste a `0x…` address or `/claim` / `/claim <0x…>` to
-  receive a fraction of the faucet balance (default 1/2000), with a per-user
-  cooldown (default 5 hours).
+- **Group faucet** — `/claim` or `/claim <0x…>` to receive a fraction of the
+  faucet balance (default 1/2000), with a per-user cooldown (default 5 hours).
 - **DM wallet** — `/deposit`, `/balance`, `/send`, `/sendall` on a deterministic
   address derived from `PRIVATEKEY` + Telegram user id.
 - **Tips / raffles** — group commands move funds between those custodial wallets.
