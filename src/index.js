@@ -239,7 +239,8 @@ async function main() {
         `  <code>/sendall &lt;0x…&gt;</code>\n\n` +
 
         `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
-        `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n\n` +
+        `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n` +
+        `  <code>/ca</code> <code>/token</code> — ERC-20 contract (tap to copy)\n\n` +
 
         `<b>┌─ ℹ️ Help ────────────────────┐</b>\n` +
         `  <code>/start</code> <code>/help</code> <code>/sikka</code> — This list\n\n` +
@@ -281,7 +282,8 @@ async function main() {
       `  <i>  default 10 drops · halves each time · min drop 0.01</i>\n\n` +
 
       `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
-      `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n\n` +
+      `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n` +
+      `  <code>/ca</code> <code>/token</code> — ERC-20 contract (tap to copy)\n\n` +
 
       `<b>┌─ 🐦 X ───────────────────────┐</b>\n` +
       `  <code>/x</code> <code>/tweet</code> <code>/twitter</code> — Live $SIKKA on X\n\n` +
@@ -311,6 +313,21 @@ async function main() {
       `🐦 *Live $SIKKA on X*\n\n` +
       `🔍 [See recent tweets](${TWEET_SEARCH_URL})`;
     replyThenDelete(ctx, text, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+  });
+
+  // /ca /token — ETH ERC-20 contract. <code> is tap-to-copy in Telegram.
+  bot.command(['ca', 'token'], (ctx) => {
+    const isPrivate = ctx.chat.type === 'private';
+    if (!isPrivate && String(ctx.chat.id) !== telegramGroup) return;
+    const text =
+      `🪙 <b>$SIKKA</b>\n` +
+      `ERC-20 · Ethereum\n\n` +
+      `<code>${SIKKA_ETH_TOKEN}</code>\n\n` +
+      `<i>Tap the address to copy</i>`;
+    replyThenDelete(ctx, text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+    });
   });
 
   // /price — ETH-mainnet $SIKKA spot (GeckoTerminal Uniswap V4 pool), cached 10 min.
