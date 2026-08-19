@@ -224,23 +224,28 @@ async function main() {
     if (isPrivate) {
       return (
         `👛 <b>Sikka Wallet</b>\n` +
-        `<i>Your personal on-chain wallet, right in Telegram.</i>\n\n` +
+        `<i>Commands available in this DM</i>\n\n` +
 
         `<b>┌─ 📥 Receive ─────────────────┐</b>\n` +
-        `  /deposit\n` +
-        `  Get your personal SIKKA address\n\n` +
+        `  <code>/deposit</code> — Your personal SIKKA address\n\n` +
 
-        `<b>┌─ 📊 Balance ─────────────────┐</b>\n` +
-        `  /balance\n` +
-        `  Check your current balance\n\n` +
+        `<b>┌─ 📊 Wallet ──────────────────┐</b>\n` +
+        `  <code>/balance</code> — Balance &amp; battery\n` +
+        `  <code>/my</code> — Address, balance, battery, explorer\n\n` +
 
         `<b>┌─ 📤 Send ────────────────────┐</b>\n` +
         `  <code>/send &lt;amount&gt; &lt;0x…&gt;</code>\n` +
         `  <code>/send all &lt;0x…&gt;</code>\n` +
         `  <code>/sendall &lt;0x…&gt;</code>\n\n` +
 
+        `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
+        `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n\n` +
+
+        `<b>┌─ ℹ️ Help ────────────────────┐</b>\n` +
+        `  <code>/start</code> <code>/help</code> <code>/sikka</code> — This list\n\n` +
+
         `<b>──────────────────────────────</b>\n` +
-        `🎰 <i>Head to the group for faucet, raffle &amp; tips</i>`
+        `🎰 <i>Head to the group for faucet, raffle, rain &amp; tips</i>`
       );
     }
 
@@ -252,28 +257,40 @@ async function main() {
       `  <code>/claim</code> — Free SIKKA to your wallet\n` +
       `  <code>/claim &lt;0x…&gt;</code> — Free SIKKA to any address\n\n` +
 
+      `<b>┌─ 👤 Wallet ──────────────────┐</b>\n` +
+      `  <code>/my</code> — Your address, balance, battery, explorer\n\n` +
+
       `<b>┌─ 🎰 Raffle ──────────────────┐</b>\n` +
       `  <code>/raffle</code> — Live pot &amp; countdown\n` +
       `  <code>/raffle &lt;fee&gt;</code> — Start a raffle\n` +
       `  <i>  min 1 SIKKA · 10 min cooldown between raffles · admins exempt</i>\n` +
       `  <code>/join</code> — Enter the active raffle\n` +
       `  <code>/rafflelist</code> — Last 5 results\n` +
+      `  <code>/raffle_&lt;id&gt;</code> — Look up a past raffle\n` +
       `  <code>/cancel</code> — Cancel raffle <i>(admin only)</i>\n\n` +
 
       `<b>┌─ 💸 Tips ────────────────────┐</b>\n` +
       `  <code>/tip @username &lt;amount&gt;</code>\n` +
-      `  Send SIKKA to any group member\n\n` +
+      `  Send SIKKA to any group member\n` +
+      `  <i>  also: tip @username &lt;amount&gt;</i>\n\n` +
 
       `<b>┌─ 🌧 Rain ────────────────────┐</b>\n` +
-      `  <code>/rain &lt;amount&gt; [&lt;persons&gt;]</code>\n` +
-      `  Drop SIKKA — first to /me grabs a share\n` +
+      `  <code>/rain</code> — Active rain status\n` +
+      `  <code>/rain &lt;amount&gt; [&lt;persons&gt;]</code> — Drop SIKKA\n` +
+      `  <code>/me</code> — Grab a drop\n` +
       `  <i>  default 10 drops · halves each time · min drop 0.01</i>\n\n` +
 
       `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
       `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n\n` +
 
+      `<b>┌─ 🐦 X ───────────────────────┐</b>\n` +
+      `  <code>/x</code> <code>/tweet</code> <code>/twitter</code> — Live $SIKKA on X\n\n` +
+
+      `<b>┌─ ℹ️ Help ────────────────────┐</b>\n` +
+      `  <code>/start</code> <code>/help</code> <code>/sikka</code> — This list\n\n` +
+
       `<b>──────────────────────────────</b>\n` +
-      `👛 <i>DM @${botUsername} for wallet commands</i>\n\n` +
+      `👛 <i>DM @${botUsername} for /deposit /balance /send</i>\n\n` +
       `🌐 <a href="https://sikkalabs.com/">sikkalabs.com</a>`
     );
   }
