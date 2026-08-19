@@ -1,34 +1,29 @@
-/** ETH-mainnet $SIKKA spot price via Uniswap V4 StateView + fiat FX. */
-
-import { keccak_256 } from '@noble/hashes/sha3.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
+/** ETH-mainnet $SIKKA spot price via GeckoTerminal pool API + fiat FX. */
 
 export const SIKKA_ETH_TOKEN = '0xbab5a2cc8c9eb4042eeae289b26b66166cf04a81';
 /** Uniswap V4 SIKKA/ETH 2% pool id (bytes32). */
 export const SIKKA_ETH_POOL_ID =
   '0xdb2b1a10f3039bce4777400a451db3ed6d920d6df533f12c904abcf74cd6f7d5';
-/** Uniswap V4 StateView on Ethereum mainnet. */
-const STATE_VIEW = '0x7ffe42c4a5deea5b0fec41c94c136cf115597227';
 
-const SIKKA_DECIMALS = 9;
-const ETH_DECIMALS = 18;
+const GECKO_POOL_URL =
+  `https://api.geckoterminal.com/api/v2/networks/eth/pools/${SIKKA_ETH_POOL_ID}`;
+
 const PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
 const HTTP_TIMEOUT_MS = 15000;
-
-const RPC_URLS = [
-  'https://ethereum.publicnode.com',
-  'https://cloudflare-eth.com',
-  'https://1rpc.io/eth',
-];
 
 let cache = null; // { expiresAt, value }
 let inflight = null;
 
-function selector(sig) {
-  return bytesToHex(keccak_256(new TextEncoder().encode(sig))).slice(0, 8);
+function normalizeAddr(addr) {
+  return String(addr || '').trim().toLowerCase();
 }
 
-const GET_SLOT0 = selector('getSlot0(bytes32)');
+/** Extract the 0x address from a GeckoTerminal relationship id (`eth_0x…`). */
+function tokenIdToAddress(id) {
+  const s = String(id || '');
+  const i = s.indexOf('0x');
+  return i === -1 ? s : s.slice(i);
+}
 
 async function fetchJson(url, opts = {}) {
   const controller = new AbortController();
@@ -45,54 +40,39 @@ async function fetchJson(url, opts = {}) {
   }
 }
 
-async function ethCall(to, data) {
-  let lastErr;
-  for (const rpc of RPC_URLS) {
-    try {
-      const j = await fetchJson(rpc, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'eth_call',
-          params: [{ to, data }, 'latest'],
-        }),
-      });
-      if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
-      if (!j.result || j.result === '0x') throw new Error('empty eth_call result');
-      return j.result;
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw new Error(`eth_call failed: ${lastErr?.message || lastErr}`);
-}
-
 /**
- * Uniswap V4 currency order: native ETH (address(0)) is token0, SIKKA is token1.
- * Returns ETH per 1 SIKKA (human units).
+ * Pick USD / ETH prices for `tokenAddress` from a GeckoTerminal pool payload.
+ * Handles SIKKA as either base or quote.
  */
-function ethPerSikkaFromSqrtPriceX96(sqrtPriceX96) {
-  // token0=ETH, token1=SIKKA. amount0 = amount1 * 2^192 / sqrtPriceX96^2
-  const den = sqrtPriceX96 * sqrtPriceX96;
-  const amount0Wei = (10n ** BigInt(SIKKA_DECIMALS) * 2n ** 192n) / den;
-  return Number(amount0Wei) / 10 ** ETH_DECIMALS;
-}
+export function priceFromGeckoPool(payload, tokenAddress = SIKKA_ETH_TOKEN) {
+  const attrs = payload?.data?.attributes;
+  const rel = payload?.data?.relationships;
+  if (!attrs) throw new Error('GeckoTerminal pool payload missing attributes');
 
-async function fetchEthUsd() {
-  // Prefer Binance (no key); fall back to CoinGecko.
-  try {
-    const j = await fetchJson('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT');
-    const n = Number(j.price);
-    if (Number.isFinite(n) && n > 0) return n;
-  } catch (_) {}
-  const j = await fetchJson(
-    'https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd',
-  );
-  const n = Number(j?.ethereum?.usd);
-  if (!Number.isFinite(n) || n <= 0) throw new Error('could not fetch ETH/USD');
-  return n;
+  const want = normalizeAddr(tokenAddress);
+  const baseAddr = normalizeAddr(tokenIdToAddress(rel?.base_token?.data?.id));
+  const quoteAddr = normalizeAddr(tokenIdToAddress(rel?.quote_token?.data?.id));
+
+  let usd;
+  let eth;
+  let ethUsd;
+  if (baseAddr === want) {
+    usd = Number(attrs.base_token_price_usd);
+    eth = Number(attrs.base_token_price_native_currency);
+    ethUsd = Number(attrs.quote_token_price_usd);
+  } else if (quoteAddr === want) {
+    usd = Number(attrs.quote_token_price_usd);
+    eth = Number(attrs.quote_token_price_native_currency);
+    ethUsd = Number(attrs.base_token_price_usd);
+  } else {
+    throw new Error(`GeckoTerminal pool does not contain token ${tokenAddress}`);
+  }
+
+  if (!Number.isFinite(usd) || usd <= 0) throw new Error('GeckoTerminal USD price missing');
+  if (!Number.isFinite(eth) || eth <= 0) throw new Error('GeckoTerminal native price missing');
+  if (!Number.isFinite(ethUsd) || ethUsd <= 0) ethUsd = usd / eth;
+
+  return { usd, eth, ethUsd };
 }
 
 async function fetchUsdFx() {
@@ -106,25 +86,25 @@ async function fetchUsdFx() {
 }
 
 async function fetchFreshPrice() {
-  const result = await ethCall(STATE_VIEW, '0x' + GET_SLOT0 + SIKKA_ETH_POOL_ID.slice(2));
-  const sqrtPriceX96 = BigInt('0x' + result.slice(2, 66));
-  if (sqrtPriceX96 === 0n) throw new Error('pool sqrtPriceX96 is zero');
-
-  const [ethUsd, fx] = await Promise.all([fetchEthUsd(), fetchUsdFx()]);
-  const eth = ethPerSikkaFromSqrtPriceX96(sqrtPriceX96);
-  const usd = eth * ethUsd;
+  const [gecko, fx] = await Promise.all([
+    fetchJson(GECKO_POOL_URL, {
+      headers: { Accept: 'application/json;version=20230203' },
+    }),
+    fetchUsdFx(),
+  ]);
+  const spot = priceFromGeckoPool(gecko, SIKKA_ETH_TOKEN);
 
   return {
     symbol: 'SIKKA',
     chain: 'ETH',
     token: SIKKA_ETH_TOKEN,
-    usd,
-    inr: usd * fx.INR,
-    aed: usd * fx.AED,
-    thb: usd * fx.THB,
-    cny: usd * fx.CNY,
-    eth,
-    ethUsd,
+    usd: spot.usd,
+    inr: spot.usd * fx.INR,
+    aed: spot.usd * fx.AED,
+    thb: spot.usd * fx.THB,
+    cny: spot.usd * fx.CNY,
+    eth: spot.eth,
+    ethUsd: spot.ethUsd,
     fetchedAt: Date.now(),
   };
 }

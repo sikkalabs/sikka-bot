@@ -296,7 +296,7 @@ async function main() {
     replyThenDelete(ctx, text, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
   });
 
-  // /price — ETH-mainnet $SIKKA spot (Uniswap V4), cached 10 min.
+  // /price — ETH-mainnet $SIKKA spot (GeckoTerminal Uniswap V4 pool), cached 10 min.
   bot.command('price', async (ctx) => {
     const isPrivate = ctx.chat.type === 'private';
     if (!isPrivate && String(ctx.chat.id) !== telegramGroup) return;

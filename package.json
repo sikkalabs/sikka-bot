@@ -8,7 +8,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "smoke": "node scripts/smoke.js",
-    "test:unit": "node --test test/sikka_client.test.js",
+    "test:unit": "node --test test/*.test.js",
     "test:podman": "bash scripts/test.sh"
   },
   "dependencies": {
