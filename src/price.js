@@ -1,9 +1,9 @@
 /** ETH-mainnet $SIKKA spot price via GeckoTerminal pool API + fiat FX. */
 
-export const SIKKA_ETH_TOKEN = '0xbab5a2cc8c9eb4042eeae289b26b66166cf04a81';
-/** Uniswap V4 SIKKA/ETH 2% pool id (bytes32). */
+export const SIKKA_ETH_TOKEN = '0x3931e94dc0afa7d755c2fc91a799ef6b59963a38';
+/** Uniswap SIKKA/ETH pool id (bytes32) on GeckoTerminal. */
 export const SIKKA_ETH_POOL_ID =
-  '0xdb2b1a10f3039bce4777400a451db3ed6d920d6df533f12c904abcf74cd6f7d5';
+  '0x2898fdc38e4a17907ea1a39eb9be67adb8719c779ba22c7928fc37a6c240d75b';
 
 const GECKO_POOL_URL =
   `https://api.geckoterminal.com/api/v2/networks/eth/pools/${SIKKA_ETH_POOL_ID}`;

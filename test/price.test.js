@@ -8,7 +8,7 @@ import {
 
 const POOL = {
   data: {
-    id: 'eth_0xdb2b1a10f3039bce4777400a451db3ed6d920d6df533f12c904abcf74cd6f7d5',
+    id: 'eth_0x2898fdc38e4a17907ea1a39eb9be67adb8719c779ba22c7928fc37a6c240d75b',
     type: 'pool',
     attributes: {
       base_token_price_usd: '0.01274220573',
