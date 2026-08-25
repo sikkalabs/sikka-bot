@@ -18,8 +18,8 @@ import path from 'path';
 import crypto from 'crypto';
 
 // Auto-delete TTL for group messages (replies & announcements). Telegram allows
-// deleting messages up to 48h after sending — 5 min keeps the group tidy.
-const GROUP_MSG_TTL_SEC = 300;
+// deleting messages up to 48h after sending — 15 min keeps the group tidy.
+const GROUP_MSG_TTL_SEC = 900;
 
 // Helper: delete a message after delaySec if it's in a group chat (never delete in private DM chats)
 function deleteLater(telegram, chatId, messageId, delaySec = GROUP_MSG_TTL_SEC) {
