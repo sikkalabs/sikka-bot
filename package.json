@@ -12,6 +12,7 @@
     "test:podman": "bash scripts/test.sh"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.8",
     "@noble/hashes": "^2.2.0",
     "@noble/post-quantum": "^0.6.1",
     "dotenv": "^16.4.7",

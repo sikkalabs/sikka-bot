@@ -13,7 +13,7 @@ import {
   getBatteryPercent,
 } from './sikka_client.js';
 import { validateAddress } from './address.js';
-import { getSikkaEthPrice, formatFiat, SIKKA_ETH_TOKEN } from './price.js';
+import { getSikkaEthPrice, formatFiat, formatUsd3, SIKKA_ETH_TOKEN } from './price.js';
 import path from 'path';
 import crypto from 'crypto';
 
@@ -35,6 +35,23 @@ function deleteLater(telegram, chatId, messageId, delaySec = GROUP_MSG_TTL_SEC) 
 // Helper: send a reply then delete both the trigger and the reply after `delaySec` seconds in group chats. Never delete in one-on-one (private) chats.
 async function replyThenDelete(ctx, text, opts = {}, delaySec = GROUP_MSG_TTL_SEC) {
   const reply = await ctx.reply(text, opts);
+  if (ctx.chat?.type === 'private') {
+    return reply;
+  }
+  const chatId = ctx.chat.id;
+  const triggerMsgId = ctx.message?.message_id;
+  setTimeout(async () => {
+    try { await ctx.telegram.deleteMessage(chatId, reply.message_id); } catch (_) {}
+    if (triggerMsgId) {
+      try { await ctx.telegram.deleteMessage(chatId, triggerMsgId); } catch (_) {}
+    }
+  }, delaySec * 1000);
+  return reply;
+}
+
+// Same as replyThenDelete but sends a photo (e.g. the /price card).
+async function replyPhotoThenDelete(ctx, source, opts = {}, delaySec = GROUP_MSG_TTL_SEC) {
+  const reply = await ctx.replyWithPhoto({ source }, opts);
   if (ctx.chat?.type === 'private') {
     return reply;
   }
@@ -304,7 +321,7 @@ async function main() {
         `  <code>/sendall &lt;0x…&gt;</code>\n\n` +
 
         `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
-        `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n` +
+        `  <code>/price</code> — ETH-mainnet $SIKKA spot (price card, USD)\n` +
         `  <code>/ca</code> <code>/token</code> — ERC-20 contract (tap to copy)\n\n` +
 
         `<b>┌─ ℹ️ Help ────────────────────┐</b>\n` +
@@ -347,7 +364,7 @@ async function main() {
       `  <i>  default 10 drops · halves each time · min drop 0.01</i>\n\n` +
 
       `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
-      `  <code>/price</code> — ETH-mainnet $SIKKA in USD / INR / AED / THB / CNY\n` +
+      `  <code>/price</code> — ETH-mainnet $SIKKA spot (price card, USD)\n` +
       `  <code>/ca</code> <code>/token</code> — ERC-20 contract (tap to copy)\n\n` +
 
       `<b>┌─ 🐦 X ───────────────────────┐</b>\n` +
@@ -405,17 +422,19 @@ async function main() {
       const ageMin = Math.floor((Date.now() - p.fetchedAt) / 60000);
       const cacheNote = ageMin <= 0 ? 'just now' : `${ageMin}m ago`;
       const matchaUrl = `https://matcha.xyz/tokens/ethereum/${SIKKA_ETH_TOKEN}`;
+      if (p.card) {
+        await replyPhotoThenDelete(ctx, p.card, {
+          ...replyOpts,
+          caption: `📈 <b>$SIKKA</b> — $${formatUsd3(p.usd)}`,
+        });
+      }
       const text =
         `📈 <b>$SIKKA</b>\n\n` +
-        `🇺🇸 <b>USD</b>  $${formatFiat(p.usd)}\n` +
-        `🇮🇳 <b>INR</b>  ₹${formatFiat(p.inr)}\n` +
-        `🇦🇪 <b>AED</b>  د.إ${formatFiat(p.aed)}\n` +
-        `🇹🇭 <b>THB</b>  ฿${formatFiat(p.thb)}\n` +
-        `🇨🇳 <b>CNY</b>  ¥${formatFiat(p.cny)}\n\n` +
+        `🇺🇸 <b>USD</b>  $${formatFiat(p.usd)}\n\n` +
         `<b>token address</b>\n` +
         `<code>${SIKKA_ETH_TOKEN}</code>\n\n` +
         `<a href="${matchaUrl}">Trade on Matcha</a>\n` +
-        `<i>Cached ${cacheNote} · refreshes every 10 min</i>`;
+        `<i>Cached ${cacheNote} · refreshes every 5 min</i>`;
       await replyThenDelete(ctx, text, {
         ...replyOpts,
         link_preview_options: { is_disabled: true },

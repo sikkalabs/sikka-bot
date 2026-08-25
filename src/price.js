@@ -1,5 +1,9 @@
 /** ETH-mainnet $SIKKA spot price via GeckoTerminal pool API + fiat FX. */
 
+import { renderPriceCard, formatUsd3 } from './pricecard.js';
+
+export { formatUsd3 };
+
 export const SIKKA_ETH_TOKEN = '0x3931e94dc0afa7d755c2fc91a799ef6b59963a38';
 /** Uniswap SIKKA/ETH pool id (bytes32) on GeckoTerminal. */
 export const SIKKA_ETH_POOL_ID =
@@ -8,7 +12,7 @@ export const SIKKA_ETH_POOL_ID =
 const GECKO_POOL_URL =
   `https://api.geckoterminal.com/api/v2/networks/eth/pools/${SIKKA_ETH_POOL_ID}`;
 
-const PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
+const PRICE_CACHE_TTL_MS = 5 * 60 * 1000;
 const HTTP_TIMEOUT_MS = 15000;
 
 let cache = null; // { expiresAt, value }
@@ -94,7 +98,7 @@ async function fetchFreshPrice() {
   ]);
   const spot = priceFromGeckoPool(gecko, SIKKA_ETH_TOKEN);
 
-  return {
+  const value = {
     symbol: 'SIKKA',
     chain: 'ETH',
     token: SIKKA_ETH_TOKEN,
@@ -107,9 +111,18 @@ async function fetchFreshPrice() {
     ethUsd: spot.ethUsd,
     fetchedAt: Date.now(),
   };
+
+  // Render the price card once per refresh; cached alongside the price.
+  try {
+    value.card = await renderPriceCard(spot.usd);
+  } catch (_) {
+    value.card = null;
+  }
+
+  return value;
 }
 
-/** Spot price of ETH-mainnet SIKKA in USD / INR / AED / THB / CNY. Cached 10 minutes. */
+/** Spot price of ETH-mainnet SIKKA in USD / INR / AED / THB / CNY. Cached 5 minutes. */
 export async function getSikkaEthPrice() {
   const now = Date.now();
   if (cache && cache.expiresAt > now) return cache.value;
