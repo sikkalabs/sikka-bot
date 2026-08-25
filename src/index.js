@@ -1,4 +1,4 @@
-import { Telegraf } from 'telegraf';
+import { Telegraf, Markup } from 'telegraf';
 import { message } from 'telegraf/filters';
 import dotenv from 'dotenv';
 import { initDB, canClaim, recordClaim, createRaffle, getActiveRaffle, addRaffleEntry, removeRaffleEntry, getRaffleEntries, hasUserJoinedRaffle, closeRaffle, cancelRaffle, getRecentRaffles, getRaffleById, setRaffleTime, canStartRaffle, createRain, getActiveRain, addRainClaim, addRainClaimTx, removeRainClaim, getRainClaims, hasUserClaimedRain, closeRain } from './db.js';
@@ -86,6 +86,25 @@ function computeRainSchedule(pot, persons) {
   }
   return { shares, leftover: remainder };
 }
+
+// ─── Command rate limiting ──────────────────────────────────────────────────
+// Burst limit: max commands per user per window. Cooldown: min gap between
+// repeats of the same command by the same user. Keeps /price spam and API
+// hammering down without punishing normal use.
+const RATE_BURST_MAX = 5;
+const RATE_BURST_WINDOW_MS = 30_000;
+const RATE_COOLDOWN_MS = {
+  price: 15_000,
+  claim: 10_000,
+  my: 5_000,
+  balance: 5_000,
+  join: 5_000,
+  me: 3_000,
+  tip: 5_000,
+  raffle: 5_000,
+  rain: 5_000,
+};
+const RATE_DEFAULT_COOLDOWN_MS = 3_000;
 
 function formatSikkaDisplay(chillar) {
   const c = asBig(chillar);
@@ -218,6 +237,52 @@ async function main() {
     return next();
   });
 
+  // ── Per-user command rate limiting ───────────────────────────────────────
+  const userCmdHits = new Map(); // userId -> timestamps[] within burst window
+  const userLastCmd = new Map(); // `${userId}:${cmd}` -> last timestamp
+  let rateChecks = 0;
+
+  function isRateLimited(userId, cmd) {
+    const now = Date.now();
+
+    // Occasional sweep so the maps don't grow unbounded
+    if (++rateChecks % 2000 === 0) {
+      for (const [k, t] of userLastCmd) {
+        if (now - t > RATE_BURST_WINDOW_MS * 4) userLastCmd.delete(k);
+      }
+      for (const [u, hits] of userCmdHits) {
+        const alive = hits.filter(t => now - t < RATE_BURST_WINDOW_MS);
+        if (alive.length === 0) userCmdHits.delete(u); else userCmdHits.set(u, alive);
+      }
+    }
+
+    const cooldown = RATE_COOLDOWN_MS[cmd] ?? RATE_DEFAULT_COOLDOWN_MS;
+    const last = userLastCmd.get(`${userId}:${cmd}`) || 0;
+    if (now - last < cooldown) return true;
+
+    const hits = (userCmdHits.get(userId) || []).filter(t => now - t < RATE_BURST_WINDOW_MS);
+    if (hits.length >= RATE_BURST_MAX) {
+      userCmdHits.set(userId, hits); // keep pruned list even when rejecting
+      return true;
+    }
+
+    hits.push(now);
+    userCmdHits.set(userId, hits);
+    userLastCmd.set(`${userId}:${cmd}`, now);
+    return false;
+  }
+
+  bot.use((ctx, next) => {
+    const entity = ctx.message?.entities?.[0];
+    if (ctx.message?.text && entity?.type === 'bot_command' && entity.offset === 0) {
+      const cmd = ctx.message.text.slice(1, entity.length).split('@')[0].toLowerCase();
+      if (isRateLimited(ctx.from?.id ?? 0, cmd)) {
+        return replyThenDelete(ctx, '⏳ Easy there — try again in a few seconds.', {}, 5);
+      }
+    }
+    return next();
+  });
+
   // ── Help renderer ────────────────────────────────────────────────────────
   // Returns HTML-formatted help text tailored to where the command was sent.
   function helpText(isPrivate) {
@@ -265,7 +330,7 @@ async function main() {
       `  <code>/raffle</code> — Live pot &amp; countdown\n` +
       `  <code>/raffle &lt;fee&gt;</code> — Start a raffle\n` +
       `  <i>  min 1 SIKKA · 10 min cooldown between raffles · admins exempt</i>\n` +
-      `  <code>/join</code> — Enter the active raffle\n` +
+      `  <code>/join</code> — Enter the active raffle <i>(or tap the button)</i>\n` +
       `  <code>/rafflelist</code> — Last 5 results\n` +
       `  <code>/raffle_&lt;id&gt;</code> — Look up a past raffle\n` +
       `  <code>/cancel</code> — Cancel raffle <i>(admin only)</i>\n\n` +
@@ -278,7 +343,7 @@ async function main() {
       `<b>┌─ 🌧 Rain ────────────────────┐</b>\n` +
       `  <code>/rain</code> — Active rain status\n` +
       `  <code>/rain &lt;amount&gt; [&lt;persons&gt;]</code> — Drop SIKKA\n` +
-      `  <code>/me</code> — Grab a drop\n` +
+      `  <code>/me</code> — Grab a drop <i>(or tap the button)</i>\n` +
       `  <i>  default 10 drops · halves each time · min drop 0.01</i>\n\n` +
 
       `<b>┌─ 📈 Price ───────────────────┐</b>\n` +
@@ -653,6 +718,10 @@ async function main() {
   // Admins bypass the cooldown. Minimum entry fee: 1 SIKKA.
   const MIN_RAFFLE_FEE = subunitsPerSikka; // 1 SIKKA
 
+  const joinKeyboard = Markup.inlineKeyboard([
+    Markup.button.callback('🎟 Join Raffle', 'raffle_join'),
+  ]);
+
   bot.command('raffle', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
     const replyOpts = { reply_parameters: { message_id: ctx.message.message_id } };
@@ -681,7 +750,7 @@ async function main() {
           `⏳ **${timeText}**\n\n` +
           `👉 /join@${botUsername} to enter!`;
 
-        const sent = await replyThenDelete(ctx, text, { parse_mode: 'Markdown' });
+        const sent = await replyThenDelete(ctx, text, { parse_mode: 'Markdown', ...joinKeyboard });
         lastPrizeMsgId = sent.message_id;
         return;
       }
@@ -760,7 +829,7 @@ async function main() {
       const creatorTag = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
       await replyThenDelete(
         ctx,
-        `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${formatSikkaDisplay(entryFee)}*\n\n✅ ${creatorTag} joined as player 1!\nTx: \`${creatorTxID}\`\n\nJoin with /join — waiting for 1 more player to start the timer!`,
+        `🎟 *New Raffle Started!* 🎟\n\nStarted by: ${creatorTag}\nEntry Fee: *${formatSikkaDisplay(entryFee)}*\n\n✅ ${creatorTag} joined as player 1!\nTx: \`${creatorTxID}\`\n\nJoin with /join — waiting for 1 more player to start the timer!\n\n📊 Check live pot & countdown anytime with /raffle`,
         { parse_mode: 'Markdown' }
       );
 
@@ -773,8 +842,9 @@ async function main() {
         `💰 Total Pool: ${formatSikkaDisplay(initialPool)}\n` +
         `🎁 Prize (Minus 5%): ${formatSikkaDisplay(initialPrize)}\n\n` +
         `⏳ Time Left: **Waiting for 1 more player to start...**\n\n` +
-        `👉 /join@${botUsername} to enter!`;
-      const prizeMsg = await bot.telegram.sendMessage(telegramGroup, prizeText, { parse_mode: 'Markdown' });
+        `👉 /join@${botUsername} to enter!\n` +
+        `📊 Live status anytime: /raffle`;
+      const prizeMsg = await bot.telegram.sendMessage(telegramGroup, prizeText, { parse_mode: 'Markdown', ...joinKeyboard });
       lastPrizeMsgId = prizeMsg.message_id;
       deleteLater(bot.telegram, telegramGroup, prizeMsg.message_id, GROUP_MSG_TTL_SEC);
     } catch (err) {
@@ -783,11 +853,14 @@ async function main() {
     }
   });
 
-  bot.command('join', async (ctx) => {
+  // Shared by the /join command and the "🎟 Join Raffle" inline button.
+  async function doJoin(ctx) {
     if (String(ctx.chat.id) !== telegramGroup) return;
 
     const userId = ctx.from.id;
-    const replyOpts = { reply_parameters: { message_id: ctx.message.message_id } };
+    // Callback queries have no trigger message to reply to
+    const triggerMsgId = ctx.callbackQuery ? null : ctx.message?.message_id;
+    const replyOpts = triggerMsgId ? { reply_parameters: { message_id: triggerMsgId } } : {};
 
     // Fix #1: per-user lock — prevents two concurrent /join messages from the
     // same user both passing hasUserJoinedRaffle before either writes to the DB.
@@ -867,6 +940,14 @@ async function main() {
     } finally {
       joiningUsers.delete(userId); // always release the lock
     }
+  }
+
+  bot.command('join', (ctx) => doJoin(ctx));
+
+  // "🎟 Join Raffle" inline button — same flow as typing /join
+  bot.action('raffle_join', async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    await doJoin(ctx);
   });
 
 
@@ -959,6 +1040,10 @@ async function main() {
   // drop 1 = half, drop 2 = half of the remainder, and so on, until a drop
   // would fall below 0.01 SIKKA. The starter pays the pot up front; the
   // unclaimed tail is refunded to them when the rain closes.
+  const rainGrabKeyboard = Markup.inlineKeyboard([
+    Markup.button.callback('☔ Grab a drop', 'rain_grab'),
+  ]);
+
   bot.command('rain', async (ctx) => {
     if (String(ctx.chat.id) !== telegramGroup) return;
     const replyOpts = { reply_parameters: { message_id: ctx.message.message_id } };
@@ -1057,8 +1142,8 @@ async function main() {
         `🌧 **New Rain!** 🌧\n\n` +
         `${starterTag} is dropping *${formatSikkaDisplay(pot)}* to up to *${schedule.shares.length}* people!\n\n` +
         `Drops: ${dropText}\n\n` +
-        `⏳ ${Math.floor(RAIN_TIMEOUT_SEC / 60)} min — type *\/me* to grab a drop!`,
-        { parse_mode: 'Markdown' }
+        `⏳ ${Math.floor(RAIN_TIMEOUT_SEC / 60)} min — tap the button or type *\/me* to grab a drop!`,
+        { parse_mode: 'Markdown', ...rainGrabKeyboard }
       );
     } catch (err) {
       console.error(err);
@@ -1217,11 +1302,12 @@ async function main() {
         `💰 Total Pool: ${formatSikkaDisplay(totalPool)}\n` +
         `🎁 Prize (Minus 5%): ${formatSikkaDisplay(prize)}\n\n` +
         `⏳ Time Left: **${timeText}**\n\n` +
-        `👉 /join@${botUsername} to enter!`;
+        `👉 /join@${botUsername} to enter!\n` +
+        `📊 Live status anytime: /raffle`;
 
       await bot.telegram.editMessageText(
         telegramGroup, lastPrizeMsgId, undefined,
-        statusText, { parse_mode: 'Markdown' }
+        statusText, { parse_mode: 'Markdown', ...joinKeyboard }
       ).catch(() => {
         // Message was deleted — stop trying to edit it
         lastPrizeMsgId = null;
@@ -1287,6 +1373,111 @@ async function main() {
     rainClaimQueue = result.then(() => {}, () => {});
     return result;
   }
+
+  // Shared by the /me command and the "☔ Grab a drop" inline button.
+  async function doRainGrab(ctx) {
+    const userId = ctx.from.id;
+    // Callback queries have no trigger message to reply to
+    const triggerMsgId = ctx.callbackQuery ? null : ctx.message?.message_id;
+    const opts = triggerMsgId ? { reply_parameters: { message_id: triggerMsgId } } : {};
+
+    if (claimingRainUsers.has(userId)) {
+      return replyThenDelete(ctx, 'Please wait, your previous claim is still processing.', opts);
+    }
+    claimingRainUsers.add(userId);
+    try {
+      // Serialize slot assignment so two concurrent /me claims can never
+      // both grab the same drop (the share depends on claim order).
+      const claim = await claimRainLocked(async () => {
+        const activeNow = await getActiveRain(db);
+        if (!activeNow) return { status: 'none' };
+        if (await hasUserClaimedRain(db, activeNow.id, userId)) return { status: 'already' };
+        const claims = await getRainClaims(db, activeNow.id);
+        const schedule = computeRainSchedule(BigInt(activeNow.total_amount), activeNow.persons);
+        if (claims.length >= schedule.shares.length) return { status: 'full' };
+        const slot = claims.length;
+        const share = schedule.shares[slot];
+        // Direct pay: the drop comes from the STARTER's wallet (not the bot),
+        // so confirm they can still cover it before reserving the slot. Their
+        // balance can drop mid-rain (they can /send, /tip, /withdraw in
+        // between), and if they can't cover any more drops the rain is over.
+        const starterClient = new SikkaClient({
+          nodeURL: selectedNodeURL,
+          wallet: getUserWallet(activeNow.starter_id),
+        });
+        if ((await starterClient.balance()) < share) {
+          return { status: 'starter_broke', rainId: activeNow.id };
+        }
+        // Record the claim FIRST (reserves the slot), then send funds —
+        // rolled back if the send fails.
+        await addRainClaim(db, activeNow.id, userId, share.toString(), null);
+        return { status: 'ok', rainId: activeNow.id, starterId: activeNow.starter_id, slot, share, schedule };
+      });
+
+      if (claim.status === 'none') return replyThenDelete(ctx, 'No active rain right now.', opts);
+      if (claim.status === 'already') return replyThenDelete(ctx, 'You already grabbed a drop from this rain!', opts);
+      if (claim.status === 'full') return replyThenDelete(ctx, 'All drops have been taken! 🌧', opts);
+      if (claim.status === 'starter_broke') {
+        // The starter can no longer cover any drops — end the rain. Unclaimed
+        // shares simply stay in the starter's wallet (nothing to refund).
+        await closeRain(db, claim.rainId);
+        bot.telegram.sendMessage(telegramGroup, `🌧 **Rain over — starter ran out of funds.**`, { parse_mode: 'Markdown' })
+          .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
+          .catch(console.error);
+        return replyThenDelete(ctx, `❌ The rain starter ran out of funds — this rain is over.`, opts);
+      }
+
+      const uWallet = getUserWallet(userId);
+      let txID;
+      try {
+        const starterClient = new SikkaClient({
+          nodeURL: selectedNodeURL,
+          wallet: getUserWallet(claim.starterId),
+        });
+        const result = await starterClient.send(claim.share, uWallet.address);
+        txID = result.txID;
+      } catch (sendErr) {
+        await removeRainClaim(db, claim.rainId, userId);
+        // If the starter ran out mid-send, no remaining drop can be paid
+        // either — close the rain (unclaimed shares stay in their wallet).
+        if (/insufficient balance|balance too low/i.test(sendErr.message || '')) {
+          await closeRain(db, claim.rainId);
+          bot.telegram.sendMessage(telegramGroup, `🌧 **Rain over — starter ran out of funds.**`, { parse_mode: 'Markdown' })
+            .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
+            .catch(console.error);
+        }
+        return replyThenDelete(ctx, humanizeSendError(sendErr), { parse_mode: 'Markdown', ...opts });
+      }
+      await addRainClaimTx(db, claim.rainId, userId, txID);
+
+      const name = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
+      const ord = rainOrdinal(claim.slot);
+      const remaining = claim.schedule.shares.length - claim.slot - 1;
+      const msg =
+        `☔ *${name}* grabbed the *${ord}* drop: *${formatSikkaDisplay(claim.share)}*!\n\n` +
+        (remaining > 0
+          ? `Still up for grabs: ${remaining} drop${remaining > 1 ? 's' : ''} — tap the button or type /me!`
+          : `That was the last drop! 🌧`);
+      await replyThenDelete(ctx, msg, { parse_mode: 'Markdown', ...opts });
+
+      ctx.telegram.sendMessage(
+        userId,
+        `🌧 You grabbed *${formatSikkaDisplay(claim.share)}* from the rain!\nTx: \`${txID}\`\n\nIt's in your wallet:\n\`${uWallet.address}\``,
+        { parse_mode: 'Markdown' }
+      ).catch(() => {});
+    } catch (err) {
+      console.error(err);
+      replyThenDelete(ctx, `Error claiming rain: ${err.message}`, opts);
+    } finally {
+      claimingRainUsers.delete(userId);
+    }
+  }
+
+  // "☔ Grab a drop" inline button — same flow as typing /me
+  bot.action('rain_grab', async (ctx) => {
+    await ctx.answerCbQuery().catch(() => {});
+    await doRainGrab(ctx);
+  });
   
   bot.on(message('text'), async (ctx) => {
     console.log(`Received message from chat ${ctx.chat.id}: ${ctx.message.text}`);
@@ -1307,99 +1498,7 @@ async function main() {
     // Allow an optional @botname suffix (/me@sikkawalletbot) like Telegram adds
     // when the command is sent from a client that appends it.
     if (/^\/me(@[a-zA-Z0-9_]+)?(\s|$)/.test(text)) {
-      const userId = ctx.from.id;
-      const opts = { reply_parameters: { message_id: ctx.message.message_id } };
-      if (claimingRainUsers.has(userId)) {
-        return replyThenDelete(ctx, 'Please wait, your previous claim is still processing.', opts);
-      }
-      claimingRainUsers.add(userId);
-      try {
-        // Serialize slot assignment so two concurrent /me claims can never
-        // both grab the same drop (the share depends on claim order).
-        const claim = await claimRainLocked(async () => {
-          const activeNow = await getActiveRain(db);
-          if (!activeNow) return { status: 'none' };
-          if (await hasUserClaimedRain(db, activeNow.id, userId)) return { status: 'already' };
-          const claims = await getRainClaims(db, activeNow.id);
-          const schedule = computeRainSchedule(BigInt(activeNow.total_amount), activeNow.persons);
-          if (claims.length >= schedule.shares.length) return { status: 'full' };
-          const slot = claims.length;
-          const share = schedule.shares[slot];
-          // Direct pay: the drop comes from the STARTER's wallet (not the bot),
-          // so confirm they can still cover it before reserving the slot. Their
-          // balance can drop mid-rain (they can /send, /tip, /withdraw in
-          // between), and if they can't cover any more drops the rain is over.
-          const starterClient = new SikkaClient({
-            nodeURL: selectedNodeURL,
-            wallet: getUserWallet(activeNow.starter_id),
-          });
-          if ((await starterClient.balance()) < share) {
-            return { status: 'starter_broke', rainId: activeNow.id };
-          }
-          // Record the claim FIRST (reserves the slot), then send funds —
-          // rolled back if the send fails.
-          await addRainClaim(db, activeNow.id, userId, share.toString(), null);
-          return { status: 'ok', rainId: activeNow.id, starterId: activeNow.starter_id, slot, share, schedule };
-        });
-
-        if (claim.status === 'none') return replyThenDelete(ctx, 'No active rain right now.', opts);
-        if (claim.status === 'already') return replyThenDelete(ctx, 'You already grabbed a drop from this rain!', opts);
-        if (claim.status === 'full') return replyThenDelete(ctx, 'All drops have been taken! 🌧', opts);
-        if (claim.status === 'starter_broke') {
-          // The starter can no longer cover any drops — end the rain. Unclaimed
-          // shares simply stay in the starter's wallet (nothing to refund).
-          await closeRain(db, claim.rainId);
-          bot.telegram.sendMessage(telegramGroup, `🌧 **Rain over — starter ran out of funds.**`, { parse_mode: 'Markdown' })
-            .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
-            .catch(console.error);
-          return replyThenDelete(ctx, `❌ The rain starter ran out of funds — this rain is over.`, opts);
-        }
-
-        const uWallet = getUserWallet(userId);
-        let txID;
-        try {
-          const starterClient = new SikkaClient({
-            nodeURL: selectedNodeURL,
-            wallet: getUserWallet(claim.starterId),
-          });
-          const result = await starterClient.send(claim.share, uWallet.address);
-          txID = result.txID;
-        } catch (sendErr) {
-          await removeRainClaim(db, claim.rainId, userId);
-          // If the starter ran out mid-send, no remaining drop can be paid
-          // either — close the rain (unclaimed shares stay in their wallet).
-          if (/insufficient balance|balance too low/i.test(sendErr.message || '')) {
-            await closeRain(db, claim.rainId);
-            bot.telegram.sendMessage(telegramGroup, `🌧 **Rain over — starter ran out of funds.**`, { parse_mode: 'Markdown' })
-              .then(m => deleteLater(bot.telegram, telegramGroup, m.message_id, GROUP_MSG_TTL_SEC))
-              .catch(console.error);
-          }
-          return replyThenDelete(ctx, humanizeSendError(sendErr), { parse_mode: 'Markdown', ...opts });
-        }
-        await addRainClaimTx(db, claim.rainId, userId, txID);
-
-        const name = ctx.from.username ? `@${ctx.from.username}` : ctx.from.first_name;
-        const ord = rainOrdinal(claim.slot);
-        const remaining = claim.schedule.shares.length - claim.slot - 1;
-        const msg =
-          `☔ *${name}* grabbed the *${ord}* drop: *${formatSikkaDisplay(claim.share)}*!\n\n` +
-          (remaining > 0
-            ? `Still up for grabs: ${remaining} drop${remaining > 1 ? 's' : ''} — type /me!`
-            : `That was the last drop! 🌧`);
-        await replyThenDelete(ctx, msg, { parse_mode: 'Markdown', ...opts });
-
-        ctx.telegram.sendMessage(
-          userId,
-          `🌧 You grabbed *${formatSikkaDisplay(claim.share)}* from the rain!\nTx: \`${txID}\`\n\nIt's in your wallet:\n\`${uWallet.address}\``,
-          { parse_mode: 'Markdown' }
-        ).catch(() => {});
-      } catch (err) {
-        console.error(err);
-        replyThenDelete(ctx, `Error claiming rain: ${err.message}`, opts);
-      } finally {
-        claimingRainUsers.delete(userId);
-      }
-      return;
+      return doRainGrab(ctx);
     }
 
     // Handle plain-text tip: "tip @username 100"
